@@ -1,0 +1,11 @@
+name = "bildebank"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "bildebank"
+
+[vars]
+ENVIRONMENT = "production"
