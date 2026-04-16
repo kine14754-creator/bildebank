@@ -1,13 +1,9 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { bearerAuth } from 'hono/bearer-auth'
-
-export interface Env {
-  R2_BUCKET: R2Bucket
-  DATABASE_URL: string
-  API_SECRET: string
-  ENVIRONMENT: string
-}
+import { imageRoutes } from './routes/images'
+import { getFromR2 } from './r2/client'
+import type { Env } from './types'
 
 const app = new Hono<{ Bindings: Env }>()
 
@@ -29,31 +25,30 @@ app.use(
 // Health check (no auth)
 app.get('/health', (c) => c.json({ status: 'ok', env: c.env.ENVIRONMENT }))
 
+// Public file serving from R2
+app.get('/files/*', async (c) => {
+  const key = c.req.path.replace('/files/', '')
+  const object = await getFromR2(c.env.R2_BUCKET, key)
+
+  if (!object) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const headers = new Headers()
+  object.writeHttpMetadata(headers)
+  headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+
+  return new Response(object.body, { headers })
+})
+
 // All /api/* routes require Bearer token
 app.use('/api/*', async (c, next) => {
   const auth = bearerAuth({ token: c.env.API_SECRET })
   return auth(c, next)
 })
 
-// --- Images ---
-app.post('/api/images/upload', async (c) => {
-  // TODO (BL-17): implement image upload to R2
-  return c.json({ message: 'Not implemented' }, 501)
-})
-
-app.get('/api/images', async (c) => {
-  // TODO (BL-17): list images from DB
-  return c.json({ message: 'Not implemented' }, 501)
-})
-
-app.get('/api/images/:id', async (c) => {
-  return c.json({ message: 'Not implemented' }, 501)
-})
-
-app.delete('/api/images/:id', async (c) => {
-  // TODO (BL-21): delete image from R2 + DB
-  return c.json({ message: 'Not implemented' }, 501)
-})
+// Mount image routes
+app.route('/api/images', imageRoutes)
 
 // --- Folders ---
 app.get('/api/folders', async (c) => {
