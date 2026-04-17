@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { eq, and, ilike, inArray } from 'drizzle-orm'
-import { createDb, images, imageTags } from '../db'
+import { createDb, images, imageTags, tags } from '../db'
 import {
   isAllowedMimeType,
   MAX_FILE_SIZE,
@@ -76,6 +76,7 @@ imageRoutes.post('/upload', async (c) => {
       folderId: image.folderId,
       tenantId: image.tenantId,
       createdAt: image.createdAt,
+      tags: [],
     },
     201
   )
@@ -107,11 +108,40 @@ imageRoutes.get('/', async (c) => {
 
   const rows = await db.select().from(images).where(and(...conditions)).limit(limit).offset(offset)
   const baseUrl = new URL(c.req.url).origin
+
+  // Hent tags for alle bildene i én ekstra query (unngår N+1)
+  const tagsByImage: Record<string, Array<{ id: string; name: string; slug: string; color: string | null }>> = {}
+  if (rows.length > 0) {
+    const imageIds = rows.map((img) => img.id)
+    const tagRows = await db
+      .select({
+        imageId: imageTags.imageId,
+        id: tags.id,
+        name: tags.name,
+        slug: tags.slug,
+        color: tags.color,
+      })
+      .from(imageTags)
+      .innerJoin(tags, eq(tags.id, imageTags.tagId))
+      .where(inArray(imageTags.imageId, imageIds))
+      .orderBy(tags.name)
+
+    for (const row of tagRows) {
+      const bucket = tagsByImage[row.imageId]
+      if (bucket) {
+        bucket.push({ id: row.id, name: row.name, slug: row.slug, color: row.color })
+      } else {
+        tagsByImage[row.imageId] = [{ id: row.id, name: row.name, slug: row.slug, color: row.color }]
+      }
+    }
+  }
+
   return c.json({
     data: rows.map((img) => ({
       ...img,
       url: buildImageUrl(baseUrl, img.key),
       webpUrl: maybeWebpUrl(baseUrl, img.key, img.mimeType),
+      tags: tagsByImage[img.id] ?? [],
     })),
     limit,
     offset,
