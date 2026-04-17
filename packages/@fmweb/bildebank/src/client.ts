@@ -5,6 +5,7 @@ import type {
   ListImagesResponse,
   ListTagsOptions,
   ListTagsResponse,
+  ReplaceImageOptions,
   UpdateImageOptions,
   UploadImageOptions,
 } from './types'
@@ -24,20 +25,14 @@ export class BildebankClient {
 
   async uploadImage(options: UploadImageOptions): Promise<BildebankImage> {
     const formData = new FormData()
-    const file =
-      options.file instanceof File
-        ? options.file
-        : new File([options.file], options.filename ?? 'upload', { type: options.file.type })
+    const file = options.file instanceof File
+      ? options.file
+      : new File([options.file], options.filename ?? 'upload', { type: options.file.type })
     formData.append('file', file)
     if (options.tenantId) formData.append('tenantId', options.tenantId)
     if (options.altText) formData.append('altText', options.altText)
     if (options.folderId) formData.append('folderId', options.folderId)
-
-    const res = await fetch(`${this.baseUrl}/api/images/upload`, {
-      method: 'POST',
-      headers: this.authHeaders,
-      body: formData,
-    })
+    const res = await fetch(`${this.baseUrl}/api/images/upload`, { method: 'POST', headers: this.authHeaders, body: formData })
     if (!res.ok) throw new Error(`Upload failed: ${res.status} ${await res.text()}`)
     return res.json() as Promise<BildebankImage>
   }
@@ -50,18 +45,13 @@ export class BildebankClient {
     if (options.tagId) params.set('tagId', options.tagId)
     if (options.limit != null) params.set('limit', String(options.limit))
     if (options.offset != null) params.set('offset', String(options.offset))
-
-    const res = await fetch(`${this.baseUrl}/api/images?${params}`, {
-      headers: this.authHeaders,
-    })
+    const res = await fetch(`${this.baseUrl}/api/images?${params}`, { headers: this.authHeaders })
     if (!res.ok) throw new Error(`List failed: ${res.status} ${await res.text()}`)
     return res.json() as Promise<ListImagesResponse>
   }
 
   async getImage(id: string): Promise<BildebankImage> {
-    const res = await fetch(`${this.baseUrl}/api/images/${id}`, {
-      headers: this.authHeaders,
-    })
+    const res = await fetch(`${this.baseUrl}/api/images/${id}`, { headers: this.authHeaders })
     if (!res.ok) throw new Error(`Get image failed: ${res.status} ${await res.text()}`)
     return res.json() as Promise<BildebankImage>
   }
@@ -76,21 +66,27 @@ export class BildebankClient {
     return res.json() as Promise<BildebankImage>
   }
 
-  async deleteImage(id: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/images/${id}`, {
-      method: 'DELETE',
+  async replaceImage(id: string, options: ReplaceImageOptions): Promise<BildebankImage> {
+    const formData = new FormData()
+    formData.append('file', options.file)
+    const res = await fetch(`${this.baseUrl}/api/images/${id}/replace`, {
+      method: 'PUT',
       headers: this.authHeaders,
+      body: formData,
     })
+    if (!res.ok) throw new Error(`Replace failed: ${res.status} ${await res.text()}`)
+    return res.json() as Promise<BildebankImage>
+  }
+
+  async deleteImage(id: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/api/images/${id}`, { method: 'DELETE', headers: this.authHeaders })
     if (!res.ok) throw new Error(`Delete failed: ${res.status} ${await res.text()}`)
   }
 
   async listTags(options: ListTagsOptions = {}): Promise<ListTagsResponse> {
     const params = new URLSearchParams()
     if (options.tenantId) params.set('tenantId', options.tenantId)
-
-    const res = await fetch(`${this.baseUrl}/api/tags?${params}`, {
-      headers: this.authHeaders,
-    })
+    const res = await fetch(`${this.baseUrl}/api/tags?${params}`, { headers: this.authHeaders })
     if (!res.ok) throw new Error(`List tags failed: ${res.status} ${await res.text()}`)
     return res.json() as Promise<ListTagsResponse>
   }

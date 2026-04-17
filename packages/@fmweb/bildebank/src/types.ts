@@ -41,6 +41,10 @@ export interface UpdateImageOptions {
   altText?: string
 }
 
+export interface ReplaceImageOptions {
+  file: File
+}
+
 export interface ListImagesOptions {
   tenantId?: string
   folderId?: string
