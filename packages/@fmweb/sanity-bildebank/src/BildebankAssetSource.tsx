@@ -15,13 +15,25 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function makeAsset(image: BildebankImage): AssetFromSource {
+  return {
+    kind: 'url',
+    value: image.url,
+    label: image.filename,
+    description: image.altText ?? undefined,
+    source: { id: image.id, name: 'bildebank', url: image.url },
+  }
+}
+
 /**
  * Asset source-dialogen som vises inne i Sanity Studio.
- * Støtter fritekst-søk (debounced 300ms) og filtrering på tag.
- * Mappe-filter venter på BL-22 (GET /api/folders).
+ * - Vis et responsivt bildegrid hentet fra Bildebank-APIet
+ * - Fritekst-søk (debounced 300ms) og tag-filter
+ * - Last opp bilder via knapp eller dra-og-slipp
  */
 export function BildebankAssetSource({ onSelect, onClose, apiUrl, apiKey }: Props) {
   const clientRef = useRef(createBildebankClient({ baseUrl: apiUrl, apiSecret: apiKey }))
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // --- Bilder ---
   const [images, setImages] = useState<BildebankImage[]>([])
@@ -39,74 +51,153 @@ export function BildebankAssetSource({ onSelect, onClose, apiUrl, apiKey }: Prop
   const [selectedTagId, setSelectedTagId] = useState('')
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Debounce: oppdater activeSearch etter forsinkelse
+  // --- Opplasting ---
+  const [uploading, setUploading] = useState(false)
+  const [uploadingName, setUploadingName] = useState('')
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const dragCounterRef = useRef(0)
+
+  // Debounce søk
   const handleSearchChange = (value: string) => {
     setSearchInput(value)
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      setActiveSearch(value)
-    }, SEARCH_DEBOUNCE_MS)
+    debounceRef.current = setTimeout(() => setActiveSearch(value), SEARCH_DEBOUNCE_MS)
   }
 
-  // Last inn tilgjengelige tags én gang
+  // Last tags én gang
   useEffect(() => {
     clientRef.current
       .listTags()
       .then((res) => setAvailableTags(res.data))
-      .catch(() => {
-        // Tags er valgfritt — ikke blokker UI ved feil
-      })
+      .catch(() => {})
   }, [])
 
-  // Hent bilder (kan gjenbrukes for paginering)
-  const fetchImages = useCallback(
-    async (currentOffset: number, search: string, tagId: string) => {
-      setLoading(true)
-      setError(null)
-      try {
-        const res = await clientRef.current.listImages({
-          limit: PAGE_SIZE,
-          offset: currentOffset,
-          search: search || undefined,
-          tagId: tagId || undefined,
-        })
-        setImages((prev) => (currentOffset === 0 ? res.data : [...prev, ...res.data]))
-        setHasMore(res.data.length === PAGE_SIZE)
-        setOffset(currentOffset + res.data.length)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Kunne ikke hente bilder fra bildebanken')
-      } finally {
-        setLoading(false)
-      }
-    },
-    [],
-  )
+  // Hent bilder
+  const fetchImages = useCallback(async (currentOffset: number, search: string, tagId: string) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await clientRef.current.listImages({
+        limit: PAGE_SIZE,
+        offset: currentOffset,
+        search: search || undefined,
+        tagId: tagId || undefined,
+      })
+      setImages((prev) => (currentOffset === 0 ? res.data : [...prev, ...res.data]))
+      setHasMore(res.data.length === PAGE_SIZE)
+      setOffset(currentOffset + res.data.length)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Kunne ikke hente bilder')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  // Re-hent når filtre endres (nullstill paginering)
+  // Re-hent når filtre endres
   useEffect(() => {
     setImages([])
     setOffset(0)
     void fetchImages(0, activeSearch, selectedTagId)
   }, [activeSearch, selectedTagId, fetchImages])
 
-  const handleSelect = useCallback(
-    (image: BildebankImage) => {
-      const asset: AssetFromSource = {
-        kind: 'url',
-        value: image.url,
-        label: image.filename,
-        description: image.altText ?? undefined,
-        source: { id: image.id, name: 'bildebank', url: image.url },
+  // --- Opplastingslogikk ---
+  const handleUpload = useCallback(
+    async (file: File) => {
+      if (!file.type.startsWith('image/')) {
+        setUploadError(`Ugyldig filtype: ${file.type}`)
+        return
       }
-      onSelect([asset])
+      setUploading(true)
+      setUploadingName(file.name)
+      setUploadError(null)
+      try {
+        const uploaded = await clientRef.current.uploadImage({ file })
+        // Prepend nytt bilde øverst i griden
+        setImages((prev) => [uploaded, ...prev])
+        // Auto-velg bildet umiddelbart
+        onSelect([makeAsset(uploaded)])
+      } catch (err) {
+        setUploadError(
+          err instanceof Error ? err.message : 'Opplasting mislyktes',
+        )
+      } finally {
+        setUploading(false)
+        setUploadingName('')
+        // Nullstill fil-input slik at samme fil kan lastes opp igjen
+        if (fileInputRef.current) fileInputRef.current.value = ''
+      }
     },
+    [onSelect],
+  )
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) void handleUpload(file)
+  }
+
+  // --- Drag-and-drop ---
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragCounterRef.current += 1
+    if (e.dataTransfer.types.includes('Files')) setIsDragging(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragCounterRef.current -= 1
+    if (dragCounterRef.current === 0) setIsDragging(false)
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragCounterRef.current = 0
+    setIsDragging(false)
+    const file = e.dataTransfer.files[0]
+    if (file) void handleUpload(file)
+  }
+
+  const handleSelect = useCallback(
+    (image: BildebankImage) => onSelect([makeAsset(image)]),
     [onSelect],
   )
 
   const isFiltered = Boolean(activeSearch || selectedTagId)
 
   return (
-    <div style={styles.container}>
+    <div
+      style={{
+        ...styles.container,
+        ...(isDragging ? styles.containerDragging : {}),
+      }}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Drag-overlay */}
+      {isDragging && (
+        <div style={styles.dragOverlay}>
+          <div style={styles.dragOverlayInner}>
+            <span style={styles.dragOverlayIcon}>&#8613;</span>
+            <span style={styles.dragOverlayText}>Slipp for å laste opp</span>
+          </div>
+        </div>
+      )}
+
+      {/* Skjult fil-input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={handleFileInput}
+      />
+
       {/* Header */}
       <div style={styles.header}>
         <span style={styles.title}>Bildebank</span>
@@ -115,7 +206,7 @@ export function BildebankAssetSource({ onSelect, onClose, apiUrl, apiKey }: Prop
         </button>
       </div>
 
-      {/* Søk + filter */}
+      {/* Toolbar: søk + filter + last opp */}
       <div style={styles.toolbar}>
         <input
           type="search"
@@ -140,10 +231,18 @@ export function BildebankAssetSource({ onSelect, onClose, apiUrl, apiKey }: Prop
             ))}
           </select>
         )}
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          style={uploading ? { ...styles.uploadBtn, ...styles.uploadBtnDisabled } : styles.uploadBtn}
+        >
+          {uploading ? `Laster opp ${uploadingName}…` : '↑ Last opp'}
+        </button>
       </div>
 
-      {/* Feilmelding */}
+      {/* Feilmeldinger */}
       {error && <div style={styles.error}>⚠️ {error}</div>}
+      {uploadError && <div style={styles.error}>⚠️ {uploadError}</div>}
 
       {/* Bildegrid */}
       <div style={styles.grid}>
@@ -170,17 +269,15 @@ export function BildebankAssetSource({ onSelect, onClose, apiUrl, apiKey }: Prop
         ))}
       </div>
 
-      {/* Statustekst */}
       {loading && <div style={styles.statusMsg}>Laster bilder…</div>}
       {!loading && images.length === 0 && !error && (
         <div style={styles.statusMsg}>
           {isFiltered
             ? 'Ingen bilder matcher søket eller filteret.'
-            : 'Ingen bilder funnet i bildebanken.'}
+            : 'Ingen bilder ennå — last opp det første!'}
         </div>
       )}
 
-      {/* Paginering */}
       {!loading && hasMore && (
         <div style={styles.footer}>
           <button
@@ -203,6 +300,41 @@ const styles = {
     fontFamily: 'system-ui, -apple-system, sans-serif',
     background: '#fff',
     overflow: 'hidden',
+    position: 'relative' as const,
+  },
+  containerDragging: {
+    outline: '3px dashed #2563eb',
+    outlineOffset: -3,
+  },
+  dragOverlay: {
+    position: 'absolute' as const,
+    inset: 0,
+    background: 'rgba(37,99,235,0.08)',
+    zIndex: 10,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    pointerEvents: 'none' as const,
+  },
+  dragOverlayInner: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: 8,
+    background: '#fff',
+    border: '2px dashed #2563eb',
+    borderRadius: 12,
+    padding: '32px 48px',
+  },
+  dragOverlayIcon: {
+    fontSize: 40,
+    color: '#2563eb',
+    lineHeight: 1,
+  },
+  dragOverlayText: {
+    fontSize: 16,
+    fontWeight: 600,
+    color: '#2563eb',
   },
   header: {
     display: 'flex',
@@ -233,15 +365,16 @@ const styles = {
     padding: '12px 20px',
     borderBottom: '1px solid #e5e5e5',
     flexShrink: 0,
+    flexWrap: 'wrap' as const,
   },
   searchInput: {
     flex: 1,
+    minWidth: 120,
     padding: '8px 12px',
     border: '1px solid #d1d5db',
     borderRadius: 6,
     fontSize: 14,
     outline: 'none',
-    minWidth: 0,
   },
   tagSelect: {
     padding: '8px 12px',
@@ -252,8 +385,24 @@ const styles = {
     cursor: 'pointer',
     flexShrink: 0,
   },
+  uploadBtn: {
+    padding: '8px 16px',
+    background: '#2563eb',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontSize: 14,
+    fontWeight: 500,
+    flexShrink: 0,
+    whiteSpace: 'nowrap' as const,
+  },
+  uploadBtnDisabled: {
+    background: '#93c5fd',
+    cursor: 'not-allowed',
+  },
   error: {
-    margin: '12px 20px',
+    margin: '8px 20px 0',
     padding: '10px 14px',
     background: '#fff5f5',
     border: '1px solid #fca5a5',
