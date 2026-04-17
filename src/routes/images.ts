@@ -89,7 +89,6 @@ imageRoutes.get('/', async (c) => {
   const limit = Math.min(parseInt(c.req.query('limit') || '50'), 200)
   const offset = parseInt(c.req.query('offset') || '0')
 
-  // If tagId filter: pre-fetch matching imageIds via image_tags join
   let tagImageIds: string[] | undefined
   if (tagId) {
     const tagRows = await db
@@ -97,7 +96,6 @@ imageRoutes.get('/', async (c) => {
       .from(imageTags)
       .where(eq(imageTags.tagId, tagId))
     tagImageIds = tagRows.map((r) => r.imageId)
-    // Short-circuit: no images have this tag
     if (tagImageIds.length === 0) {
       return c.json({ data: [], limit, offset })
     }
@@ -144,6 +142,39 @@ imageRoutes.get('/:id', async (c) => {
     ...image,
     url: buildImageUrl(baseUrl, image.key),
   })
+})
+
+// PATCH /:id — oppdater filename og/eller altText
+imageRoutes.patch('/:id', async (c) => {
+  const db = createDb(c.env.DATABASE_URL)
+  const id = c.req.param('id')
+
+  let body: { filename?: string; altText?: string }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+
+  if (!body.filename && body.altText === undefined) {
+    return c.json({ error: 'Nothing to update' }, 400)
+  }
+
+  const [image] = await db.select().from(images).where(eq(images.id, id)).limit(1)
+  if (!image) return c.json({ error: 'Image not found' }, 404)
+
+  const updates: Record<string, unknown> = {}
+  if (body.filename?.trim()) updates.filename = body.filename.trim()
+  if (body.altText !== undefined) updates.altText = body.altText
+
+  const [updated] = await db
+    .update(images)
+    .set(updates)
+    .where(eq(images.id, id))
+    .returning()
+
+  const baseUrl = new URL(c.req.url).origin
+  return c.json({ ...updated, url: buildImageUrl(baseUrl, updated.key) })
 })
 
 // DELETE /:id

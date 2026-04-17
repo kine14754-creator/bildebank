@@ -36,6 +36,11 @@ export interface UploadImageOptions {
   folderId?: string
 }
 
+export interface UpdateImageOptions {
+  filename?: string
+  altText?: string
+}
+
 export interface ListImagesOptions {
   tenantId?: string
   folderId?: string

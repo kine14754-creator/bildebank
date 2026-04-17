@@ -5,6 +5,7 @@ import type {
   ListImagesResponse,
   ListTagsOptions,
   ListTagsResponse,
+  UpdateImageOptions,
   UploadImageOptions,
 } from './types'
 
@@ -62,6 +63,16 @@ export class BildebankClient {
       headers: this.authHeaders,
     })
     if (!res.ok) throw new Error(`Get image failed: ${res.status} ${await res.text()}`)
+    return res.json() as Promise<BildebankImage>
+  }
+
+  async updateImage(id: string, options: UpdateImageOptions): Promise<BildebankImage> {
+    const res = await fetch(`${this.baseUrl}/api/images/${id}`, {
+      method: 'PATCH',
+      headers: { ...this.authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    })
+    if (!res.ok) throw new Error(`Update failed: ${res.status} ${await res.text()}`)
     return res.json() as Promise<BildebankImage>
   }
 
