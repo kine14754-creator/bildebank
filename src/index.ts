@@ -2,6 +2,8 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { bearerAuth } from 'hono/bearer-auth'
 import { imageRoutes } from './routes/images'
+import { imageTagRoutes } from './routes/imageTags'
+import { tagRoutes } from './routes/tags'
 import { getFromR2 } from './r2/client'
 import type { Env } from './types'
 
@@ -47,24 +49,9 @@ app.use('/api/*', async (c, next) => {
   return auth(c, next)
 })
 
-// Mount image routes
+// Mount routes
 app.route('/api/images', imageRoutes)
-
-// --- Folders ---
-app.get('/api/folders', async (c) => {
-  // TODO (BL-22): list folders
-  return c.json({ message: 'Not implemented' }, 501)
-})
-
-app.post('/api/folders', async (c) => {
-  // TODO (BL-22): create folder
-  return c.json({ message: 'Not implemented' }, 501)
-})
-
-// --- Tags ---
-app.get('/api/tags', async (c) => {
-  // TODO (BL-25): list tags
-  return c.json({ message: 'Not implemented' }, 501)
-})
+app.route('/api/images', imageTagRoutes)
+app.route('/api/tags', tagRoutes)
 
 export default app

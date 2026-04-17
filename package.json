@@ -2,6 +2,9 @@
   "name": "bildebank",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "packages/@fmweb/*"
+  ],
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -13,6 +16,9 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "@jsquash/jpeg": "^1.5.0",
+    "@jsquash/png": "^3.0.1",
+    "@jsquash/webp": "^3.2.0",
     "@neondatabase/serverless": "^0.10.0",
     "drizzle-orm": "^0.36.0",
     "hono": "^4.6.0"

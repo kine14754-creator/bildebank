@@ -30,6 +30,8 @@ export const images = pgTable('images', {
 export const tags = pgTable('tags', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
+  slug: text('slug').notNull().default(''),
+  color: text('color'),
   tenantId: text('tenant_id').notNull().default('default'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 })
