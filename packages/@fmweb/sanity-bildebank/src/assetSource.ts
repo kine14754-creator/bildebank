@@ -1,15 +1,17 @@
 import { createElement } from 'react'
-import type { AssetSource } from 'sanity'
+import type { ComponentType } from 'react'
+import type { AssetSource, AssetSourceComponentProps } from 'sanity'
 import { BildebankAssetSource } from './BildebankAssetSource'
 import type { SanityBildebankPluginOptions } from './types'
 
 /**
- * Bygger et Sanity AssetSource-objekt med options bakt inn i komponenten.
+ * Bygger et Sanity AssetSource-objekt med plugin-options bakt inn i
+ * React-komponenten, slik at den kan registreres via form.image.assetSources.
  */
 export function createBildebankAssetSource(
   options: SanityBildebankPluginOptions,
 ): AssetSource {
-  const Component = (props: Parameters<typeof BildebankAssetSource>[0]) =>
+  const Component: ComponentType<AssetSourceComponentProps> = (props) =>
     createElement(BildebankAssetSource, { ...props, ...options })
   Component.displayName = 'BildebankAssetSourceWrapper'
 
