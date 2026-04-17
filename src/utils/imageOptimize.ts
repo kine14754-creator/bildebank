@@ -1,11 +1,9 @@
-import decodeJpeg from '@jsquash/jpeg/decode'
-import decodePng from '@jsquash/png/decode'
-import encodeWebp from '@jsquash/webp/encode'
+// @jsquash WASM-pakker krever spesiell bundler-konfigurasjon for Cloudflare Workers.
+// Deaktivert midlertidig slik at wrangler-bygg ikke feiler.
+// TODO: re-implementer med korrekt WASM-initialisering (wrangler [[rules]] + init())
 
-const CONVERTIBLE = new Set(['image/jpeg', 'image/png'])
-
-export function canConvertToWebP(mimeType: string): boolean {
-  return CONVERTIBLE.has(mimeType)
+export function canConvertToWebP(_mimeType: string): boolean {
+  return false
 }
 
 /** Deriverer WebP-nøkkelen fra original R2-nøkkel ved å bytte ut filendelse */
@@ -13,17 +11,7 @@ export function toWebPKey(key: string): string {
   return key.replace(/\.[^./]+$/, '.webp')
 }
 
-/** Konverterer JPEG eller PNG til WebP. Kaster feil ved ukjent format. */
-export async function convertToWebP(buffer: ArrayBuffer, mimeType: string): Promise<ArrayBuffer> {
-  let imageData: ImageData
-
-  if (mimeType === 'image/jpeg') {
-    imageData = await decodeJpeg(buffer)
-  } else if (mimeType === 'image/png') {
-    imageData = await decodePng(buffer)
-  } else {
-    throw new Error(`Cannot convert ${mimeType} to WebP`)
-  }
-
-  return encodeWebp(imageData, { quality: 85 })
+/** Stub — kaster alltid. Brukes ikke så lenge canConvertToWebP() returnerer false. */
+export async function convertToWebP(_buffer: ArrayBuffer, mimeType: string): Promise<ArrayBuffer> {
+  throw new Error(`WebP conversion not configured: ${mimeType}`)
 }
