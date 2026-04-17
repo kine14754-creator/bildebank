@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
-import { eq, and } from 'drizzle-orm'
-import { createDb, images } from '../db'
+import { eq, and, ilike, inArray } from 'drizzle-orm'
+import { createDb, images, imageTags } from '../db'
 import {
   isAllowedMimeType,
   MAX_FILE_SIZE,
@@ -84,17 +84,36 @@ imageRoutes.get('/', async (c) => {
   const db = createDb(c.env.DATABASE_URL)
   const tenantId = c.req.query('tenantId') || 'default'
   const folderId = c.req.query('folderId')
+  const search = c.req.query('search')
+  const tagId = c.req.query('tagId')
   const limit = Math.min(parseInt(c.req.query('limit') || '50'), 200)
   const offset = parseInt(c.req.query('offset') || '0')
+
+  // If tagId filter: pre-fetch matching imageIds via image_tags join
+  let tagImageIds: string[] | undefined
+  if (tagId) {
+    const tagRows = await db
+      .select({ imageId: imageTags.imageId })
+      .from(imageTags)
+      .where(eq(imageTags.tagId, tagId))
+    tagImageIds = tagRows.map((r) => r.imageId)
+    // Short-circuit: no images have this tag
+    if (tagImageIds.length === 0) {
+      return c.json({ data: [], limit, offset })
+    }
+  }
+
+  const conditions = [
+    eq(images.tenantId, tenantId),
+    ...(folderId ? [eq(images.folderId, folderId)] : []),
+    ...(search ? [ilike(images.filename, `%${search}%`)] : []),
+    ...(tagImageIds ? [inArray(images.id, tagImageIds)] : []),
+  ]
 
   const rows = await db
     .select()
     .from(images)
-    .where(
-      folderId
-        ? and(eq(images.tenantId, tenantId), eq(images.folderId, folderId))
-        : eq(images.tenantId, tenantId)
-    )
+    .where(and(...conditions))
     .limit(limit)
     .offset(offset)
 

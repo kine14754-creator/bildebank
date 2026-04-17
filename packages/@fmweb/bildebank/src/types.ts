@@ -11,10 +11,21 @@ export interface BildebankImage {
   updatedAt: string
 }
 
+export interface BildebankTag {
+  id: string
+  name: string
+  tenantId: string
+  createdAt: string
+}
+
 export interface ListImagesResponse {
   data: BildebankImage[]
   limit: number
   offset: number
+}
+
+export interface ListTagsResponse {
+  data: BildebankTag[]
 }
 
 export interface UploadImageOptions {
@@ -28,8 +39,16 @@ export interface UploadImageOptions {
 export interface ListImagesOptions {
   tenantId?: string
   folderId?: string
+  /** Fritekst-søk — filtrerer på filename (case-insensitive) */
+  search?: string
+  /** Filtrer på en spesifikk tag-ID */
+  tagId?: string
   limit?: number
   offset?: number
+}
+
+export interface ListTagsOptions {
+  tenantId?: string
 }
 
 export interface BildebankClientOptions {

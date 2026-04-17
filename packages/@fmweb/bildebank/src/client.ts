@@ -3,6 +3,8 @@ import type {
   BildebankImage,
   ListImagesOptions,
   ListImagesResponse,
+  ListTagsOptions,
+  ListTagsResponse,
   UploadImageOptions,
 } from './types'
 
@@ -43,6 +45,8 @@ export class BildebankClient {
     const params = new URLSearchParams()
     if (options.tenantId) params.set('tenantId', options.tenantId)
     if (options.folderId) params.set('folderId', options.folderId)
+    if (options.search) params.set('search', options.search)
+    if (options.tagId) params.set('tagId', options.tagId)
     if (options.limit != null) params.set('limit', String(options.limit))
     if (options.offset != null) params.set('offset', String(options.offset))
 
@@ -67,6 +71,17 @@ export class BildebankClient {
       headers: this.authHeaders,
     })
     if (!res.ok) throw new Error(`Delete failed: ${res.status} ${await res.text()}`)
+  }
+
+  async listTags(options: ListTagsOptions = {}): Promise<ListTagsResponse> {
+    const params = new URLSearchParams()
+    if (options.tenantId) params.set('tenantId', options.tenantId)
+
+    const res = await fetch(`${this.baseUrl}/api/tags?${params}`, {
+      headers: this.authHeaders,
+    })
+    if (!res.ok) throw new Error(`List tags failed: ${res.status} ${await res.text()}`)
+    return res.json() as Promise<ListTagsResponse>
   }
 }
 

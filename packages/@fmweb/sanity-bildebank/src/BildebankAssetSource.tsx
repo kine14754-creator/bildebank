@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import type { AssetFromSource, AssetSourceComponentProps } from 'sanity'
 import { createBildebankClient } from '@fmweb/bildebank'
-import type { BildebankImage } from '@fmweb/bildebank'
+import type { BildebankImage, BildebankTag } from '@fmweb/bildebank'
 import type { SanityBildebankPluginOptions } from './types'
 
 type Props = AssetSourceComponentProps & SanityBildebankPluginOptions
 
 const PAGE_SIZE = 40
+const SEARCH_DEBOUNCE_MS = 300
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -15,38 +16,78 @@ function formatBytes(bytes: number): string {
 }
 
 /**
- * Asset source-dialogen som vises inne i Sanity Studio når brukeren
- * velger "Bildebank" som bildekilde. Viser et responsivt grid med
- * alle bilder fra bildebanken, med lazy loading og størrelsesindikator.
+ * Asset source-dialogen som vises inne i Sanity Studio.
+ * Støtter fritekst-søk (debounced 300ms) og filtrering på tag.
+ * Mappe-filter venter på BL-22 (GET /api/folders).
  */
 export function BildebankAssetSource({ onSelect, onClose, apiUrl, apiKey }: Props) {
   const clientRef = useRef(createBildebankClient({ baseUrl: apiUrl, apiSecret: apiKey }))
+
+  // --- Bilder ---
   const [images, setImages] = useState<BildebankImage[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [offset, setOffset] = useState(0)
   const [hasMore, setHasMore] = useState(false)
 
-  const fetchImages = useCallback(async (currentOffset: number) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await clientRef.current.listImages({ limit: PAGE_SIZE, offset: currentOffset })
-      setImages((prev) =>
-        currentOffset === 0 ? res.data : [...prev, ...res.data],
-      )
-      setHasMore(res.data.length === PAGE_SIZE)
-      setOffset(currentOffset + res.data.length)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Kunne ikke hente bilder fra bildebanken')
-    } finally {
-      setLoading(false)
-    }
+  // --- Tags ---
+  const [availableTags, setAvailableTags] = useState<BildebankTag[]>([])
+
+  // --- Filtre ---
+  const [searchInput, setSearchInput] = useState('')
+  const [activeSearch, setActiveSearch] = useState('')
+  const [selectedTagId, setSelectedTagId] = useState('')
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Debounce: oppdater activeSearch etter forsinkelse
+  const handleSearchChange = (value: string) => {
+    setSearchInput(value)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      setActiveSearch(value)
+    }, SEARCH_DEBOUNCE_MS)
+  }
+
+  // Last inn tilgjengelige tags én gang
+  useEffect(() => {
+    clientRef.current
+      .listTags()
+      .then((res) => setAvailableTags(res.data))
+      .catch(() => {
+        // Tags er valgfritt — ikke blokker UI ved feil
+      })
   }, [])
 
+  // Hent bilder (kan gjenbrukes for paginering)
+  const fetchImages = useCallback(
+    async (currentOffset: number, search: string, tagId: string) => {
+      setLoading(true)
+      setError(null)
+      try {
+        const res = await clientRef.current.listImages({
+          limit: PAGE_SIZE,
+          offset: currentOffset,
+          search: search || undefined,
+          tagId: tagId || undefined,
+        })
+        setImages((prev) => (currentOffset === 0 ? res.data : [...prev, ...res.data]))
+        setHasMore(res.data.length === PAGE_SIZE)
+        setOffset(currentOffset + res.data.length)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Kunne ikke hente bilder fra bildebanken')
+      } finally {
+        setLoading(false)
+      }
+    },
+    [],
+  )
+
+  // Re-hent når filtre endres (nullstill paginering)
   useEffect(() => {
-    void fetchImages(0)
-  }, [fetchImages])
+    setImages([])
+    setOffset(0)
+    void fetchImages(0, activeSearch, selectedTagId)
+  }, [activeSearch, selectedTagId, fetchImages])
 
   const handleSelect = useCallback(
     (image: BildebankImage) => {
@@ -55,16 +96,14 @@ export function BildebankAssetSource({ onSelect, onClose, apiUrl, apiKey }: Prop
         value: image.url,
         label: image.filename,
         description: image.altText ?? undefined,
-        source: {
-          id: image.id,
-          name: 'bildebank',
-          url: image.url,
-        },
+        source: { id: image.id, name: 'bildebank', url: image.url },
       }
       onSelect([asset])
     },
     [onSelect],
   )
+
+  const isFiltered = Boolean(activeSearch || selectedTagId)
 
   return (
     <div style={styles.container}>
@@ -74,6 +113,33 @@ export function BildebankAssetSource({ onSelect, onClose, apiUrl, apiKey }: Prop
         <button onClick={onClose} style={styles.closeBtn} aria-label="Lukk dialog">
           ✕
         </button>
+      </div>
+
+      {/* Søk + filter */}
+      <div style={styles.toolbar}>
+        <input
+          type="search"
+          placeholder="Søk på filnavn…"
+          value={searchInput}
+          onChange={(e) => handleSearchChange(e.target.value)}
+          style={styles.searchInput}
+          aria-label="Søk på filnavn"
+        />
+        {availableTags.length > 0 && (
+          <select
+            value={selectedTagId}
+            onChange={(e) => setSelectedTagId(e.target.value)}
+            style={styles.tagSelect}
+            aria-label="Filtrer på tag"
+          >
+            <option value="">Alle tags</option>
+            {availableTags.map((tag) => (
+              <option key={tag.id} value={tag.id}>
+                {tag.name}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* Feilmelding */}
@@ -104,18 +170,23 @@ export function BildebankAssetSource({ onSelect, onClose, apiUrl, apiKey }: Prop
         ))}
       </div>
 
-      {/* Laster */}
+      {/* Statustekst */}
       {loading && <div style={styles.statusMsg}>Laster bilder…</div>}
-
-      {/* Tom tilstand */}
       {!loading && images.length === 0 && !error && (
-        <div style={styles.statusMsg}>Ingen bilder funnet i bildebanken.</div>
+        <div style={styles.statusMsg}>
+          {isFiltered
+            ? 'Ingen bilder matcher søket eller filteret.'
+            : 'Ingen bilder funnet i bildebanken.'}
+        </div>
       )}
 
-      {/* Last inn flere */}
+      {/* Paginering */}
       {!loading && hasMore && (
         <div style={styles.footer}>
-          <button onClick={() => void fetchImages(offset)} style={styles.loadMoreBtn}>
+          <button
+            onClick={() => void fetchImages(offset, activeSearch, selectedTagId)}
+            style={styles.loadMoreBtn}
+          >
             Last inn flere
           </button>
         </div>
@@ -156,6 +227,31 @@ const styles = {
     lineHeight: 1,
     borderRadius: 4,
   },
+  toolbar: {
+    display: 'flex',
+    gap: 8,
+    padding: '12px 20px',
+    borderBottom: '1px solid #e5e5e5',
+    flexShrink: 0,
+  },
+  searchInput: {
+    flex: 1,
+    padding: '8px 12px',
+    border: '1px solid #d1d5db',
+    borderRadius: 6,
+    fontSize: 14,
+    outline: 'none',
+    minWidth: 0,
+  },
+  tagSelect: {
+    padding: '8px 12px',
+    border: '1px solid #d1d5db',
+    borderRadius: 6,
+    fontSize: 14,
+    background: '#fff',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
   error: {
     margin: '12px 20px',
     padding: '10px 14px',
@@ -182,7 +278,6 @@ const styles = {
     padding: 0,
     textAlign: 'left' as const,
     overflow: 'hidden',
-    transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
   },
   imageWrapper: {
     width: '100%',
