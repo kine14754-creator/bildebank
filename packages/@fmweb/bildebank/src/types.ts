@@ -1,6 +1,8 @@
 export interface BildebankImage {
   id: string
   url: string
+  /** WebP-optimalisert versjon av bildet (kun for jpeg/png) */
+  webpUrl?: string
   filename: string
   size: number
   mimeType: string
