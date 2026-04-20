@@ -4,6 +4,7 @@ import { bearerAuth } from 'hono/bearer-auth'
 import { imageRoutes } from './routes/images'
 import { imageTagRoutes } from './routes/imageTags'
 import { tagRoutes } from './routes/tags'
+import { folderRoutes } from './routes/folders'
 import { getFromR2 } from './r2/client'
 import type { Env } from './types'
 
@@ -53,5 +54,6 @@ app.use('/api/*', async (c, next) => {
 app.route('/api/images', imageRoutes)
 app.route('/api/images', imageTagRoutes)
 app.route('/api/tags', tagRoutes)
+app.route('/api/folders', folderRoutes)
 
 export default app
