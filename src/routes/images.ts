@@ -166,14 +166,17 @@ imageRoutes.get('/:id', async (c) => {
 imageRoutes.patch('/:id', async (c) => {
   const db = createDb(c.env.DATABASE_URL)
   const id = c.req.param('id')
-  let body: { filename?: string; altText?: string }
+  let body: { filename?: string; altText?: string; folderId?: string | null }
   try { body = await c.req.json() } catch { return c.json({ error: 'Invalid JSON body' }, 400) }
-  if (!body.filename && body.altText === undefined) return c.json({ error: 'Nothing to update' }, 400)
+  if (!body.filename && body.altText === undefined && body.folderId === undefined) {
+    return c.json({ error: 'Nothing to update' }, 400)
+  }
   const [image] = await db.select().from(images).where(eq(images.id, id)).limit(1)
   if (!image) return c.json({ error: 'Image not found' }, 404)
   const updates: Record<string, unknown> = {}
   if (body.filename?.trim()) updates.filename = body.filename.trim()
   if (body.altText !== undefined) updates.altText = body.altText
+  if (body.folderId !== undefined) updates.folderId = body.folderId ?? null
   const [updated] = await db.update(images).set(updates).where(eq(images.id, id)).returning()
   const baseUrl = new URL(c.req.url).origin
   return c.json({ ...updated, url: buildImageUrl(baseUrl, updated.key), webpUrl: maybeWebpUrl(baseUrl, updated.key, updated.mimeType) })
