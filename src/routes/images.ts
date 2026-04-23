@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, and, ilike, inArray } from 'drizzle-orm'
+import { eq, and, ilike, inArray, asc, desc } from 'drizzle-orm'
 import { createDb, images, imageTags, tags } from '../db'
 import {
   isAllowedMimeType,
@@ -88,14 +88,19 @@ imageRoutes.get('/', async (c) => {
   const tenantId = c.req.query('tenantId') || 'default'
   const folderId = c.req.query('folderId')
   const search = c.req.query('search')
-  const tagId = c.req.query('tagId')
+  const tagIds = c.req.queries('tagId') ?? []
   const limit = Math.min(parseInt(c.req.query('limit') || '50'), 200)
   const offset = parseInt(c.req.query('offset') || '0')
+  const sortBy = c.req.query('sortBy') || 'createdAt'
+  const sortOrder = c.req.query('sortOrder') || 'desc'
 
   let tagImageIds: string[] | undefined
-  if (tagId) {
-    const tagRows = await db.select({ imageId: imageTags.imageId }).from(imageTags).where(eq(imageTags.tagId, tagId))
-    tagImageIds = tagRows.map((r) => r.imageId)
+  if (tagIds.length > 0) {
+    const tagRows = await db
+      .select({ imageId: imageTags.imageId })
+      .from(imageTags)
+      .where(inArray(imageTags.tagId, tagIds))
+    tagImageIds = [...new Set(tagRows.map((r) => r.imageId))]
     if (tagImageIds.length === 0) return c.json({ data: [], limit, offset })
   }
 
@@ -106,7 +111,12 @@ imageRoutes.get('/', async (c) => {
     ...(tagImageIds ? [inArray(images.id, tagImageIds)] : []),
   ]
 
-  const rows = await db.select().from(images).where(and(...conditions)).limit(limit).offset(offset)
+  const sortColumn = sortBy === 'filename' ? images.filename
+    : sortBy === 'size' ? images.size
+    : images.createdAt
+  const orderExpr = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn)
+
+  const rows = await db.select().from(images).where(and(...conditions)).orderBy(orderExpr).limit(limit).offset(offset)
   const baseUrl = new URL(c.req.url).origin
 
   // Hent tags for alle bildene i én ekstra query (unngår N+1)
