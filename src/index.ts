@@ -10,16 +10,25 @@ import type { Env } from './types'
 
 const app = new Hono<{ Bindings: Env }>()
 
-// CORS -- allow Sanity Studio origins
+// Origins allowed to call the API from a browser. Patterns, not plain
+// strings: Hono's cors() compares an `origin` array with array.includes(),
+// so a literal 'https://*.sanity.studio' entry would never match anything.
+const ALLOWED_ORIGINS = [
+  // Local studio dev server (sanity dev picks a free port, not always 3333)
+  /^http:\/\/localhost:\d+$/,
+  /^http:\/\/127\.0\.0\.1:\d+$/,
+  // Studios deployed with `sanity deploy` (<host>.sanity.studio)
+  /^https:\/\/([a-z0-9-]+\.)*sanity\.studio$/,
+  // Studios embedded in the Sanity dashboard (www.sanity.io/@<org>/studio/...)
+  /^https:\/\/([a-z0-9-]+\.)*sanity\.io$/,
+  // Self-hosted studio
+  /^https:\/\/sanity\.fmweb\.no$/,
+]
+
 app.use(
   '*',
   cors({
-    origin: [
-      'http://localhost:3333',
-      'https://*.sanity.studio',
-      'https://*.sanity.io',
-      'https://sanity.fmweb.no',
-    ],
+    origin: (origin) => (ALLOWED_ORIGINS.some((pattern) => pattern.test(origin)) ? origin : null),
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
   })
