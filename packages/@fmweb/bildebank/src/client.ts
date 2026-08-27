@@ -45,6 +45,8 @@ export class BildebankClient {
     if (options.tagId) params.set('tagId', options.tagId)
     if (options.limit != null) params.set('limit', String(options.limit))
     if (options.offset != null) params.set('offset', String(options.offset))
+    if (options.sortBy) params.set('sortBy', options.sortBy)
+    if (options.sortOrder) params.set('sortOrder', options.sortOrder)
     const res = await fetch(`${this.baseUrl}/api/images?${params}`, { headers: this.authHeaders })
     if (!res.ok) throw new Error(`List failed: ${res.status} ${await res.text()}`)
     return res.json() as Promise<ListImagesResponse>

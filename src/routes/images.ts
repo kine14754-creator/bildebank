@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { eq, and, ilike, inArray, asc, desc } from 'drizzle-orm'
-import { createDb, images, imageTags, tags } from '../db'
+import { createDb, folders, images, imageTags, tags } from '../db'
 import {
   isAllowedMimeType,
   MAX_FILE_SIZE,
@@ -17,6 +17,35 @@ export const imageRoutes = new Hono<{ Bindings: Env }>()
 /** Bygger webpUrl fra original nøkkel og baseUrl dersom bildet er konvertert */
 function maybeWebpUrl(baseUrl: string, key: string, mimeType: string): string | undefined {
   return canConvertToWebP(mimeType) ? buildImageUrl(baseUrl, toWebPKey(key)) : undefined
+}
+
+/**
+ * Collects a folder id together with every folder beneath it, breadth-first.
+ * Guards against cycles so a corrupt parent chain cannot hang the request.
+ */
+function collectFolderSubtree(
+  all: Array<{ id: string; parentId: string | null }>,
+  rootId: string
+): string[] {
+  const childrenByParent = new Map<string, string[]>()
+  for (const folder of all) {
+    if (!folder.parentId) continue
+    const bucket = childrenByParent.get(folder.parentId)
+    if (bucket) bucket.push(folder.id)
+    else childrenByParent.set(folder.parentId, [folder.id])
+  }
+
+  const collected = new Set<string>([rootId])
+  const queue: string[] = [rootId]
+  while (queue.length > 0) {
+    const current = queue.shift() as string
+    for (const childId of childrenByParent.get(current) ?? []) {
+      if (collected.has(childId)) continue
+      collected.add(childId)
+      queue.push(childId)
+    }
+  }
+  return [...collected]
 }
 
 // POST /upload
@@ -93,6 +122,8 @@ imageRoutes.get('/', async (c) => {
   const offset = parseInt(c.req.query('offset') || '0')
   const sortBy = c.req.query('sortBy') || 'createdAt'
   const sortOrder = c.req.query('sortOrder') || 'desc'
+  // recursive=true makes a folder match its whole subtree, not just its direct children.
+  const recursive = c.req.query('recursive') === 'true'
 
   let tagImageIds: string[] | undefined
   if (tagIds.length > 0) {
@@ -104,9 +135,22 @@ imageRoutes.get('/', async (c) => {
     if (tagImageIds.length === 0) return c.json({ data: [], limit, offset })
   }
 
+  let folderIds: string[] | undefined
+  if (folderId) {
+    if (recursive) {
+      const allFolders = await db
+        .select({ id: folders.id, parentId: folders.parentId })
+        .from(folders)
+        .where(eq(folders.tenantId, tenantId))
+      folderIds = collectFolderSubtree(allFolders, folderId)
+    } else {
+      folderIds = [folderId]
+    }
+  }
+
   const conditions = [
     eq(images.tenantId, tenantId),
-    ...(folderId ? [eq(images.folderId, folderId)] : []),
+    ...(folderIds ? [inArray(images.folderId, folderIds)] : []),
     ...(search ? [ilike(images.filename, `%${search}%`)] : []),
     ...(tagImageIds ? [inArray(images.id, tagImageIds)] : []),
   ]

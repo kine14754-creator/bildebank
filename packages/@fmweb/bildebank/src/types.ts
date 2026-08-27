@@ -56,6 +56,8 @@ export interface ListImagesOptions {
   tagId?: string
   limit?: number
   offset?: number
+  sortBy?: 'createdAt' | 'filename' | 'size'
+  sortOrder?: 'asc' | 'desc'
 }
 
 export interface ListTagsOptions {
