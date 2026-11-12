@@ -1,11 +1,31 @@
 name = "bildebank"
 main = "src/index.ts"
-compatibility_date = "2024-11-01"
-compatibility_flags = ["nodejs_compat"]
+compatibility_date = "2026-11-01"
+# nodejs_compat: the agents MCP handler uses node:async_hooks.
+# global_fetch_strictly_public: required by workers-oauth-provider before it will
+# fetch Client ID Metadata Documents (CIMD) — the registration style Claude prefers.
+# It also keeps the MCP upload_image tool's server-side fetch on the public internet.
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
 [[r2_buckets]]
 binding = "R2_BUCKET"
 bucket_name = "bildebank"
 
+# OAuth for /mcp: clients, grants, tokens (hashed) and sign-in rate-limit counters.
+# Create once with `npx wrangler kv namespace create OAUTH_KV` and paste the id here.
+# (`wrangler dev` uses a local simulated namespace, so the placeholder works locally.)
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "REPLACE_WITH_OAUTH_KV_ID"
+
+# Cloudflare Images: resizes previews for the MCP view_image tool. Works on
+# workers.dev (no zone needed). Without it, view_image only shows originals
+# that are already under 150 KB.
+[images]
+binding = "IMAGES"
+
 [vars]
 ENVIRONMENT = "production"
+# Optional: pin the public origin (issuer + MCP resource URL) — needed only if a
+# custom domain is put in front of the worker. Defaults to the request's origin.
+# PUBLIC_ORIGIN = "https://bildebank.example.com"

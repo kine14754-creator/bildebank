@@ -1,3 +1,7 @@
-# Kopier til .dev.vars for lokal utvikling (aldri commit .dev.vars)
+# Copy to .dev.vars for local development (never commit .dev.vars)
 DATABASE_URL=postgresql://user:password@host/bildebank
 API_SECRET=your-secret-api-key-here
+
+# Without a Neon database: run `npm run dev:db` and use this instead
+# (localhost URLs are served by scripts/local-neon.mjs over plain HTTP).
+# DATABASE_URL=postgresql://postgres:postgres@localhost:4444/bildebank

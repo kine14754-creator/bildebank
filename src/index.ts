@@ -6,9 +6,10 @@ import { imageTagRoutes } from './routes/imageTags'
 import { tagRoutes } from './routes/tags'
 import { folderRoutes } from './routes/folders'
 import { getFromR2 } from './r2/client'
+import { handleOAuthAndMcp } from './oauth'
 import type { Env } from './types'
 
-const app = new Hono<{ Bindings: Env }>()
+export const app = new Hono<{ Bindings: Env }>()
 
 // Origins allowed to call the API from a browser. Patterns, not plain
 // strings: Hono's cors() compares an `origin` array with array.includes(),
@@ -65,4 +66,15 @@ app.route('/api/images', imageTagRoutes)
 app.route('/api/tags', tagRoutes)
 app.route('/api/folders', folderRoutes)
 
-export default app
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // /mcp, its OAuth endpoints and the /authorize sign-in page (see oauth.ts).
+    // Checked before the Hono app, as in the Broadcast worker: the API-secret
+    // routes never see an OAuth token, and every other path returns null here
+    // and reaches the app unchanged. MCP clients connect server-to-server, so
+    // these paths need no entry in ALLOWED_ORIGINS.
+    const oauthResponse = await handleOAuthAndMcp(request, env, ctx)
+    if (oauthResponse) return oauthResponse
+    return app.fetch(request, env, ctx)
+  },
+} satisfies ExportedHandler<Env>
