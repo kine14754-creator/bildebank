@@ -12,11 +12,11 @@ binding = "R2_BUCKET"
 bucket_name = "bildebank"
 
 # OAuth for /mcp: clients, grants, tokens (hashed) and sign-in rate-limit counters.
-# Create once with `npx wrangler kv namespace create OAUTH_KV` and paste the id here.
+# Namespace "bildebank-oauth-kv" (separate from the Broadcast worker's OAUTH_KV).
 # (`wrangler dev` uses a local simulated namespace, so the placeholder works locally.)
 [[kv_namespaces]]
 binding = "OAUTH_KV"
-id = "REPLACE_WITH_OAUTH_KV_ID"
+id = "5a5b2d4e5d7844d4a9bab16cca3f2600"
 
 # Cloudflare Images: resizes previews for the MCP view_image tool. Works on
 # workers.dev (no zone needed). Without it, view_image only shows originals
