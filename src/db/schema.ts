@@ -1,10 +1,10 @@
-import { pgTable, uuid, text, integer, timestamp, primaryKey } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, integer, timestamp, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core'
 
 // --- Folders ---
 export const folders = pgTable('folders', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
-  parentId: uuid('parent_id').references((): ReturnType<typeof uuid> => folders.id),
+  parentId: uuid('parent_id').references((): AnyPgColumn => folders.id),
   tenantId: text('tenant_id').notNull().default('default'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),

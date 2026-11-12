@@ -123,7 +123,8 @@ imageRoutes.patch('/:id', async (c) => {
   if (body.filename?.trim()) updates.filename = body.filename.trim()
   if (body.altText !== undefined) updates.altText = body.altText
   if (body.folderId !== undefined) updates.folderId = body.folderId ?? null
-  const [updated] = await db.update(images).set(updates).where(eq(images.id, id)).returning()
+  // The row was found above, so the update returns it.
+  const [updated] = (await db.update(images).set(updates).where(eq(images.id, id)).returning()) as [typeof image]
   const baseUrl = new URL(c.req.url).origin
   return c.json({ ...updated, url: buildImageUrl(baseUrl, updated.key), webpUrl: maybeWebpUrl(baseUrl, updated.key, updated.mimeType) })
 })
@@ -154,7 +155,8 @@ imageRoutes.put('/:id/replace', async (c) => {
     }
   }
 
-  const [updated] = await db.update(images).set({ filename: file.name, size: file.size, mimeType }).where(eq(images.id, id)).returning()
+  // The row was found above, so the update returns it.
+  const [updated] = (await db.update(images).set({ filename: file.name, size: file.size, mimeType }).where(eq(images.id, id)).returning()) as [typeof image]
   const baseUrl = new URL(c.req.url).origin
   return c.json({ ...updated, url: buildImageUrl(baseUrl, updated.key), webpUrl: maybeWebpUrl(baseUrl, updated.key, updated.mimeType) })
 })
