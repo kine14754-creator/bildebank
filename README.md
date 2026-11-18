@@ -9,14 +9,14 @@ the MCP server at `/mcp`.
 | `/health`       | none                         | Health check                           |
 | `/files/*`      | none                         | Public image files from R2             |
 | `/api/*`        | `Authorization: Bearer <API_SECRET>` | Images, folders, tags (Studio plugin) |
-| `/admin/mcp-tokens` | `Authorization: Bearer <API_SECRET>` | Create, list, change and revoke personal access tokens for `/mcp` |
+| `/admin/mcp-tokens` | `Authorization: Bearer <ADMIN_SECRET>` | Create, list, change and revoke personal access tokens for `/mcp` |
 | `/mcp`          | OAuth 2.1 (sign in with a personal access token) | MCP server for Claude |
 
 ## Development
 
 ```bash
 npm install --legacy-peer-deps
-cp .dev.vars.example .dev.vars   # fill in DATABASE_URL and API_SECRET
+cp .dev.vars.example .dev.vars   # fill in DATABASE_URL, API_SECRET and ADMIN_SECRET
 npm run dev                      # wrangler dev on http://localhost:8787
 npm test                         # vitest (in-memory Postgres via PGlite)
 ```
@@ -94,12 +94,15 @@ npm run mcp-token -- set-access "Kari Nordmann" write # or read
 npm run mcp-token -- revoke "Kari Nordmann"           # deletes the token and its sign-ins
 ```
 
-The script calls the `/admin/mcp-tokens` routes. It reads `API_SECRET` and, optionally,
+The script calls the `/admin/mcp-tokens` routes. It reads `ADMIN_SECRET` and, optionally,
 `BILDEBANK_URL` (default `https://bildebank.filipkronstad.workers.dev`) from the environment
 or from a `.env` file in the project root (gitignored). Give each person their token over a
 private channel.
 
-Admin API (all `Authorization: Bearer <API_SECRET>`):
+Admin API (all `Authorization: Bearer <ADMIN_SECRET>`). `ADMIN_SECRET` is a separate worker
+secret from `API_SECRET` on purpose: `API_SECRET` ships to browsers in the Studio plugin, and
+holding it must not let anyone mint MCP tokens. The API secret is rejected here, and without
+`ADMIN_SECRET` configured the routes answer `503`.
 
 | Method & path                     | Body                    | Returns |
 | --------------------------------- | ----------------------- | ------- |
@@ -118,8 +121,9 @@ npx wrangler kv namespace create OAUTH_KV   # paste the printed id into wrangler
 npx wrangler deploy
 ```
 
-No new secrets: the admin routes use the existing `API_SECRET`. After deploying, create a
-token for each person with `npm run mcp-token -- create "<name>"`. The Images binding needs no
+One new secret for the admin routes: `npx wrangler secret put ADMIN_SECRET` (a long random
+value; also put it in `.env` for `npm run mcp-token`). After deploying, create a token for
+each person with `npm run mcp-token -- create "<name>"`. The Images binding needs no
 setup beyond `wrangler.toml` (Images transformations are billed per unique transformation,
 with a free monthly allowance).
 

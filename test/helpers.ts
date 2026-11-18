@@ -114,6 +114,7 @@ export function makeEnv(extra: Partial<Env> = {}): Env {
     // Parsed but never connected to: tool tests pass a PGlite db directly.
     DATABASE_URL: 'postgresql://user:pass@db.test/bildebank',
     API_SECRET: 'correct-key',
+    ADMIN_SECRET: 'admin-key',
     ENVIRONMENT: 'test',
     OAUTH_KV: makeKv(),
     ...extra,

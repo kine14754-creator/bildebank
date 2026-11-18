@@ -17,7 +17,7 @@
  * issued to that token's own userId with the token name in props, and every /mcp
  * request re-checks that the token still exists — so revoking a token cuts access
  * on the next request. The shared API_SECRET is not accepted on the sign-in page;
- * it only guards /api/* and the admin routes. There is no third-party identity
+ * it only guards /api/*. The admin routes use their own ADMIN_SECRET. There is no third-party identity
  * provider.
  */
 import {

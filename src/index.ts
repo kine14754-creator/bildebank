@@ -61,9 +61,13 @@ app.use('/api/*', async (c, next) => {
   return auth(c, next)
 })
 
-// Admin routes (personal access tokens for the /mcp sign-in): same Bearer API_SECRET
+// Admin routes (personal access tokens for the /mcp sign-in): Bearer ADMIN_SECRET.
+// Deliberately not API_SECRET — that key is in the Studio plugin's browser bundle,
+// and anyone holding it must not be able to mint MCP tokens.
 app.use('/admin/*', async (c, next) => {
-  const auth = bearerAuth({ token: c.env.API_SECRET })
+  const secret = c.env.ADMIN_SECRET
+  if (!secret) return c.json({ error: 'ADMIN_SECRET is not configured on this worker.' }, 503)
+  const auth = bearerAuth({ token: secret })
   return auth(c, next)
 })
 

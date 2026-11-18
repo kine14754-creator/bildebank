@@ -18,7 +18,7 @@ const send = (req: Request) => worker.fetch(req, env, ctxStub)
 
 // ── Admin API ───────────────────────────────────────────────────────────────
 
-function admin(method: string, path = '', body?: unknown, secret: string | null = 'correct-key') {
+function admin(method: string, path = '', body?: unknown, secret: string | null = 'admin-key') {
   return send(
     new Request(`${BASE}/admin/mcp-tokens${path}`, {
       method,
@@ -199,8 +199,8 @@ const READ_TOOLS = ['get_image', 'list_folders', 'search_images', 'view_image']
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('admin routes', () => {
-  it('reject requests without the API secret, or with a wrong one', async () => {
-    for (const secret of [null, 'wrong']) {
+  it('reject requests without the admin secret, with a wrong one, or with the API secret', async () => {
+    for (const secret of [null, 'wrong', 'correct-key']) {
       expect((await admin('GET', '', undefined, secret)).status).toBe(401)
       expect((await admin('POST', '', { name: 'Kari' }, secret)).status).toBe(401)
       expect((await admin('PATCH', '/Kari', { access: 'write' }, secret)).status).toBe(401)
@@ -208,6 +208,12 @@ describe('admin routes', () => {
     }
     const list = (await (await admin('GET')).json()) as Listed
     expect(list.tokens).toEqual([])
+  })
+
+  it('answer 503 when ADMIN_SECRET is not configured', async () => {
+    env = makeEnv({ ADMIN_SECRET: undefined })
+    expect((await admin('GET')).status).toBe(503)
+    expect((await admin('GET', '', undefined, '')).status).toBe(503)
   })
 
   it('create returns the raw token once and stores only its hash', async () => {

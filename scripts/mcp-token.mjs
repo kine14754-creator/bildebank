@@ -9,7 +9,7 @@
  *   npm run mcp-token -- revoke "<name>"
  *
  * Config (environment variables, or a .env file in the project root):
- *   API_SECRET      the worker's API secret (required)
+ *   ADMIN_SECRET    the worker's admin secret (required; not the API_SECRET)
  *   BILDEBANK_URL   worker URL (default https://bildebank.filipkronstad.workers.dev)
  */
 import { existsSync, readFileSync } from 'node:fs'
@@ -44,10 +44,10 @@ function fail(message) {
 const dotEnv = loadDotEnv()
 const env = (key) => process.env[key] || dotEnv[key] || ''
 const baseUrl = (env('BILDEBANK_URL') || DEFAULT_URL).replace(/\/+$/, '')
-const secret = env('API_SECRET')
+const secret = env('ADMIN_SECRET')
 
 async function call(method, path, body) {
-  if (!secret) fail('API_SECRET is not set. Put it in the environment or in .env.')
+  if (!secret) fail('ADMIN_SECRET is not set. Put it in the environment or in .env.')
   let res
   try {
     res = await fetch(`${baseUrl}/admin/mcp-tokens${path}`, {
@@ -69,7 +69,7 @@ async function call(method, path, body) {
     data = { error: text }
   }
   if (!res.ok) {
-    const hint = res.status === 401 ? ' (check API_SECRET)' : ''
+    const hint = res.status === 401 ? ' (check ADMIN_SECRET)' : ''
     fail(`Error ${res.status}${hint}: ${data.error ?? text}`)
   }
   return data
