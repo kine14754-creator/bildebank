@@ -1,6 +1,6 @@
 /**
  * Admin routes for the personal access tokens used to sign in to /mcp.
- * Mounted under /admin/mcp-tokens behind Bearer API_SECRET (see index.ts).
+ * Mounted under /admin/mcp-tokens behind Bearer ADMIN_SECRET (see index.ts).
  *
  *   POST   /admin/mcp-tokens          { name, access? } → 201 { name, createdAt, access, token }
  *   GET    /admin/mcp-tokens                            → { tokens: [{ name, createdAt, access }] }
