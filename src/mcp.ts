@@ -1,6 +1,6 @@
 /**
  * MCP tools for Bildebank: list_folders, search_images, view_image, get_image,
- * upload_image.
+ * list_tags (read) and upload_image, create_tag, set_image_tags (write).
  *
  * Same layout as the Broadcast MCP (nimlas-sites/packages/broadcast-worker/src/mcp.ts):
  * every tool calls the worker's own service layer directly (src/services/*) —
@@ -14,9 +14,9 @@
  * that mutates data must do both.
  */
 import { McpServer } from '@modelcontextprotocol/server'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import { createDb, folders, tags, type Db, type Image } from './db'
+import { createDb, folders, type Db, type Image } from './db'
 import { buildImageUrl, getFromR2, MAX_FILE_SIZE } from './r2/client'
 import {
   directImageCounts,
@@ -34,6 +34,14 @@ import {
   tagsForImages,
   type ImageTag,
 } from './services/images'
+import {
+  addTagsToImage,
+  existingTagIds,
+  findExistingTag,
+  insertTag,
+  listTagsWithCounts,
+  removeTagsFromImage,
+} from './services/tags'
 import { makePreview } from './utils/preview'
 import {
   deriveFilename,
@@ -165,11 +173,7 @@ async function assertFolderExists(db: Db, folderId: string): Promise<void> {
 
 async function assertTagsExist(db: Db, tagIds: string[]): Promise<void> {
   if (tagIds.length === 0) return
-  const rows = await db
-    .select({ id: tags.id })
-    .from(tags)
-    .where(and(inArray(tags.id, tagIds), eq(tags.tenantId, TENANT_ID)))
-  const found = new Set(rows.map((r) => r.id))
+  const found = await existingTagIds(db, TENANT_ID, tagIds)
   const missing = tagIds.filter((id) => !found.has(id))
   if (missing.length) throw new ToolError(`Unknown tag id(s): ${missing.join(', ')}`)
 }
@@ -392,6 +396,80 @@ export async function uploadImage(
   })
 }
 
+// ── Tags ────────────────────────────────────────────────────────────────────
+
+export const TAG_NAME_MAX = 100
+export const SET_TAGS_MAX = 50
+
+export async function listTags(ctx: ToolContext): Promise<ToolResult> {
+  return guarded(async () => {
+    const rows = await listTagsWithCounts(ctx.db, TENANT_ID)
+    return ok({
+      tags: rows.map((t) => ({ id: t.id, name: t.name, imageCount: t.imageCount })),
+    })
+  })
+}
+
+export async function createTag(ctx: ToolContext, input: { name: string }): Promise<ToolResult> {
+  return guarded(async () => {
+    requireWrite(ctx)
+    const name = input.name.trim()
+    if (!name) throw new ToolError('The tag name must not be empty.')
+    if (name.length > TAG_NAME_MAX) {
+      throw new ToolError(`The tag name must be at most ${TAG_NAME_MAX} characters.`)
+    }
+
+    const existing = await findExistingTag(ctx.db, TENANT_ID, name)
+    if (existing) {
+      return ok({
+        id: existing.id,
+        name: existing.name,
+        existing: true,
+        note: 'A tag with this name already exists, so it was returned instead of creating a duplicate.',
+      })
+    }
+    const tag = await insertTag(ctx.db, { name, tenantId: TENANT_ID })
+    return ok({ id: tag.id, name: tag.name, existing: false })
+  })
+}
+
+export interface SetImageTagsInput {
+  imageId: string
+  addTagIds?: string[]
+  removeTagIds?: string[]
+}
+
+export async function setImageTags(ctx: ToolContext, input: SetImageTagsInput): Promise<ToolResult> {
+  return guarded(async () => {
+    requireWrite(ctx)
+    const add = [...new Set(input.addTagIds ?? [])]
+    const remove = [...new Set(input.removeTagIds ?? [])]
+    if (add.length === 0 && remove.length === 0) {
+      throw new ToolError('Pass at least one tag id in addTagIds or removeTagIds.')
+    }
+    const both = add.filter((id) => remove.includes(id))
+    if (both.length) {
+      throw new ToolError(`Tag id(s) in both addTagIds and removeTagIds: ${both.join(', ')}`)
+    }
+
+    const img = await getImageById(ctx.db, input.imageId)
+    if (!img || img.tenantId !== TENANT_ID) throw new ToolError(`Image ${input.imageId} not found.`)
+    await assertTagsExist(ctx.db, [...add, ...remove])
+
+    const removed = await removeTagsFromImage(ctx.db, img.id, remove)
+    const added = await addTagsToImage(ctx.db, img.id, add)
+    const current = (await tagsForImages(ctx.db, [img.id]))[img.id] ?? []
+
+    return ok({
+      imageId: img.id,
+      added,
+      removed,
+      unchanged: [...add, ...remove].filter((id) => !added.includes(id) && !removed.includes(id)),
+      tags: current.map((t) => ({ id: t.id, name: t.name })),
+    })
+  })
+}
+
 // ── Server ──────────────────────────────────────────────────────────────────
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const
@@ -436,7 +514,8 @@ export function createBildebankMcpServer(
         'Returns TEXT ONLY — metadata (id, filename, altText, tags, folder path, size in pixels, ' +
         'url, createdAt), never the pictures themselves. To actually look at candidates, pass a ' +
         'handful of the returned ids to view_image. Results are newest first; when nextCursor is ' +
-        'set, call again with it to get the next page. Read-only.',
+        'set, call again with it to get the next page. To filter by tag, get tag ids from ' +
+        'list_tags. Read-only.',
       inputSchema: z.object({
         search: z
           .string()
@@ -447,7 +526,10 @@ export function createBildebankMcpServer(
           .boolean()
           .optional()
           .describe('With folderId: include images in subfolders too (default true).'),
-        tagIds: z.array(uuid).optional().describe('Only images that have at least one of these tags.'),
+        tagIds: z
+          .array(uuid)
+          .optional()
+          .describe('Only images that have at least one of these tags (ids from list_tags).'),
         limit: z
           .number()
           .int()
@@ -508,6 +590,20 @@ export function createBildebankMcpServer(
     async ({ id }) => getImage(ctx, { id })
   )
 
+  server.registerTool(
+    'list_tags',
+    {
+      title: 'List tags',
+      description:
+        'All tags in the Bildebank library: id, name and how many images carry each, sorted by ' +
+        'name. Use the ids to filter search_images, to tag uploads in upload_image, or with ' +
+        'set_image_tags. Read-only.',
+      inputSchema: z.object({}),
+      annotations: READ_ONLY,
+    },
+    async () => listTags(ctx)
+  )
+
   // ── Write tools: write-access tokens only ──
   writeTools(() => {
     server.registerTool(
@@ -519,13 +615,14 @@ export function createBildebankMcpServer(
           'and stores it like a normal upload. JPEG, PNG, WebP and SVG up to 20 MB. If an image with ' +
           'the same filename already exists, that image is returned with existing: true and nothing ' +
           'is uploaded — pass force: true only when a second copy is really wanted. The filename ' +
-          "defaults to the URL's last path segment. Returns id, url, webpUrl, filename, folderId, existing.",
+          "defaults to the URL's last path segment. To tag it, pass tag ids from list_tags (create " +
+        'missing tags with create_tag first). Returns id, url, webpUrl, filename, folderId, existing.',
         inputSchema: z.object({
           sourceUrl: z.string().url().describe('Public https URL of the image.'),
           filename: z.string().max(200).optional().describe('Filename to store (default: from the URL).'),
           altText: z.string().max(1000).optional().describe('Alt text describing the image.'),
           folderId: uuid.optional().describe('Folder to put it in (see list_folders).'),
-          tagIds: z.array(uuid).optional().describe('Existing tag ids to attach.'),
+          tagIds: z.array(uuid).optional().describe('Existing tag ids to attach (see list_tags).'),
           force: z
             .boolean()
             .optional()
@@ -539,6 +636,59 @@ export function createBildebankMcpServer(
         },
       },
       async (input) => uploadImage(ctx, input)
+    )
+
+    server.registerTool(
+      'create_tag',
+      {
+        title: 'Create a tag',
+        description:
+          'Create a tag by name. If a tag with the same name (ignoring case) already exists, ' +
+          'that tag is returned with existing: true and nothing is created. Returns id, name, ' +
+          'existing. Check list_tags first to reuse existing tags.',
+        inputSchema: z.object({
+          name: z.string().min(1).max(TAG_NAME_MAX).describe('Tag name, e.g. "Sommer".'),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ name }) => createTag(ctx, { name })
+    )
+
+    server.registerTool(
+      'set_image_tags',
+      {
+        title: 'Add or remove tags on an image',
+        description:
+          'Add and/or remove tags on one existing image. Tags not named are left as they are. ' +
+          'Tag ids come from list_tags (or create_tag). Adding a tag the image already has, or ' +
+          'removing one it lacks, is a no-op reported under unchanged. Returns the ids added and ' +
+          "removed and the image's tags afterwards.",
+        inputSchema: z.object({
+          imageId: uuid.describe('Image id (from search_images).'),
+          addTagIds: z
+            .array(uuid)
+            .max(SET_TAGS_MAX)
+            .optional()
+            .describe('Tag ids to add to the image.'),
+          removeTagIds: z
+            .array(uuid)
+            .max(SET_TAGS_MAX)
+            .optional()
+            .describe('Tag ids to remove from the image.'),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async (input) => setImageTags(ctx, input)
     )
   })
 

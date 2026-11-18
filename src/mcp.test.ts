@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { eq } from 'drizzle-orm'
 import { folders, imageTags, images, tags, type Db } from './db'
 import worker from './index'
 import {
+  createTag,
   getImage,
   listFolders,
+  listTags,
+  setImageTags,
   searchImages,
   uploadImage,
   viewImages,
@@ -405,6 +409,117 @@ describe('upload_image', () => {
     )
     expect(res.isError).toBe(true)
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+// ── Tags ────────────────────────────────────────────────────────────────────
+
+describe('list_tags', () => {
+  it('returns every tag with id, name and image count, by name', async () => {
+    const { ctx, db, ids } = await setup()
+    await db.insert(tags).values({ name: 'Alpine', slug: 'alpine' })
+    await db.insert(tags).values({ name: 'Annen kunde', slug: 'annen-kunde', tenantId: 'other' })
+    const res = await listTags({ ...ctx, access: 'read' })
+    expect(res.isError).toBeUndefined()
+    const out = data<{ tags: { id: string; name: string; imageCount: number }[] }>(res)
+    expect(out.tags.map((t) => [t.name, t.imageCount])).toEqual([
+      ['Alpine', 0],
+      ['Sommer', 1],
+    ])
+    expect(out.tags[1]!.id).toBe(ids.tag)
+  })
+})
+
+describe('create_tag', () => {
+  it('creates a tag', async () => {
+    const { ctx, db } = await setup()
+    const res = await createTag(ctx, { name: '  Vinter  ' })
+    const out = data<{ id: string; name: string; existing: boolean }>(res)
+    expect(out).toMatchObject({ name: 'Vinter', existing: false })
+    const [row] = await db.select().from(tags).where(eq(tags.id, out.id))
+    expect(row).toMatchObject({ name: 'Vinter', slug: 'vinter', tenantId: 'default' })
+  })
+
+  it('returns the existing tag for the same name in another case', async () => {
+    const { ctx, db, ids } = await setup()
+    for (const name of ['sommer', 'SOMMER', ' Sommer ']) {
+      const out = data<{ id: string; name: string; existing: boolean }>(await createTag(ctx, { name }))
+      expect(out).toMatchObject({ id: ids.tag, name: 'Sommer', existing: true })
+    }
+    expect(await db.select().from(tags)).toHaveLength(1)
+  })
+
+  it('does not match a tag from another tenant, and rejects an empty name', async () => {
+    const { ctx, db } = await setup()
+    await db.insert(tags).values({ name: 'Vinter', slug: 'vinter', tenantId: 'other' })
+    expect(data<{ existing: boolean }>(await createTag(ctx, { name: 'Vinter' })).existing).toBe(false)
+    expect((await createTag(ctx, { name: '   ' })).isError).toBe(true)
+  })
+
+  it('refuses a read-only token', async () => {
+    const { ctx, db } = await setup()
+    const res = await createTag({ ...ctx, access: 'read' }, { name: 'Vinter' })
+    expect(res.isError).toBe(true)
+    expect(res.content[0]).toMatchObject({ text: expect.stringMatching(/read-only/) })
+    expect(await db.select().from(tags)).toHaveLength(1)
+  })
+})
+
+describe('set_image_tags', () => {
+  type Out = { imageId: string; added: string[]; removed: string[]; unchanged: string[]; tags: { id: string; name: string }[] }
+  const addTag = async (db: Db, name: string) =>
+    (await db.insert(tags).values({ name, slug: name.toLowerCase() }).returning())[0]!.id
+
+  it('adds and removes tags in one call and returns the result', async () => {
+    const { ctx, db, ids } = await setup()
+    const vinter = await addTag(db, 'Vinter')
+    const res = await setImageTags(ctx, { imageId: ids.grandImg, addTagIds: [vinter], removeTagIds: [ids.tag] })
+    expect(res.isError).toBeUndefined()
+    const out = data<Out>(res)
+    expect(out).toMatchObject({ imageId: ids.grandImg, added: [vinter], removed: [ids.tag], unchanged: [] })
+    expect(out.tags).toEqual([{ id: vinter, name: 'Vinter' }])
+    const rows = await db.select().from(imageTags).where(eq(imageTags.imageId, ids.grandImg))
+    expect(rows).toEqual([{ imageId: ids.grandImg, tagId: vinter }])
+  })
+
+  it('leaves other tags alone and reports no-ops as unchanged', async () => {
+    const { ctx, db, ids } = await setup()
+    const vinter = await addTag(db, 'Vinter')
+    const out = data<Out>(
+      await setImageTags(ctx, { imageId: ids.grandImg, addTagIds: [ids.tag, vinter] })
+    )
+    expect(out.added).toEqual([vinter])
+    expect(out.unchanged).toEqual([ids.tag])
+    expect(out.tags.map((t) => t.name)).toEqual(['Sommer', 'Vinter'])
+
+    const noop = data<Out>(await setImageTags(ctx, { imageId: ids.rootImg, removeTagIds: [vinter] }))
+    expect(noop).toMatchObject({ removed: [], unchanged: [vinter], tags: [] })
+  })
+
+  it('rejects unknown images and tags, empty and contradictory requests', async () => {
+    const { ctx, db, ids } = await setup()
+    const [foreign] = await db.insert(tags).values({ name: 'X', slug: 'x', tenantId: 'other' }).returning()
+    const cases: [Parameters<typeof setImageTags>[1], RegExp][] = [
+      [{ imageId: crypto.randomUUID(), addTagIds: [ids.tag] }, /not found/],
+      [{ imageId: ids.rootImg, addTagIds: [crypto.randomUUID()] }, /Unknown tag id/],
+      [{ imageId: ids.rootImg, addTagIds: [foreign!.id] }, /Unknown tag id/],
+      [{ imageId: ids.rootImg }, /at least one tag id/],
+      [{ imageId: ids.rootImg, addTagIds: [ids.tag], removeTagIds: [ids.tag] }, /both/],
+    ]
+    for (const [input, message] of cases) {
+      const res = await setImageTags(ctx, input)
+      expect(res.isError).toBe(true)
+      expect(res.content[0]).toMatchObject({ text: expect.stringMatching(message) })
+    }
+    expect(await db.select().from(imageTags)).toHaveLength(1)
+  })
+
+  it('refuses a read-only token', async () => {
+    const { ctx, db, ids } = await setup()
+    const res = await setImageTags({ ...ctx, access: 'read' }, { imageId: ids.grandImg, removeTagIds: [ids.tag] })
+    expect(res.isError).toBe(true)
+    expect(res.content[0]).toMatchObject({ text: expect.stringMatching(/read-only/) })
+    expect(await db.select().from(imageTags)).toHaveLength(1)
   })
 })
 
