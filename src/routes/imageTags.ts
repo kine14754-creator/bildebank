@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import { createDb, imageTags, images, tags } from '../db'
+import { addTagsToImage, removeTagsFromImage } from '../services/tags'
 import type { Env } from '../types'
 
 export const imageTagRoutes = new Hono<{ Bindings: Env }>()
@@ -43,7 +44,7 @@ imageTagRoutes.post('/:id/tags', async (c) => {
   const tag = await db.select({ id: tags.id }).from(tags).where(eq(tags.id, body.tagId)).limit(1)
   if (tag.length === 0) return c.json({ error: 'Tag not found' }, 404)
 
-  await db.insert(imageTags).values({ imageId, tagId: body.tagId }).onConflictDoNothing()
+  await addTagsToImage(db, imageId, [body.tagId])
 
   return c.json({ added: true }, 201)
 })
@@ -54,12 +55,9 @@ imageTagRoutes.delete('/:id/tags/:tagId', async (c) => {
   const imageId = c.req.param('id')
   const tagId = c.req.param('tagId')
 
-  const deleted = await db
-    .delete(imageTags)
-    .where(and(eq(imageTags.imageId, imageId), eq(imageTags.tagId, tagId)))
-    .returning()
+  const removed = await removeTagsFromImage(db, imageId, [tagId])
 
-  if (deleted.length === 0) {
+  if (removed.length === 0) {
     return c.json({ error: 'Tag not found on image' }, 404)
   }
 

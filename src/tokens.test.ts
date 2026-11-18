@@ -194,7 +194,8 @@ async function callUpload(accessToken: string) {
   return body.error?.message ?? body.result!.content.map((c) => c.text).join('\n')
 }
 
-const READ_TOOLS = ['get_image', 'list_folders', 'search_images', 'view_image']
+const READ_TOOLS = ['get_image', 'list_folders', 'list_tags', 'search_images', 'view_image']
+const WRITE_TOOLS = ['create_tag', 'set_image_tags', 'upload_image']
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
@@ -355,17 +356,17 @@ describe('revocation', () => {
 })
 
 describe('access levels', () => {
-  it('a read token cannot see or call upload_image', async () => {
+  it('a read token cannot see or call the write tools', async () => {
     const accessToken = await signIn(await createToken('Kari'))
-    expect(await toolNames(accessToken)).not.toContain('upload_image')
+    expect(await toolNames(accessToken)).toEqual(READ_TOOLS)
     const message = await callUpload(accessToken)
     expect(message).toMatch(/upload_image/)
     expect(message).not.toMatch(/Only https/)
   })
 
-  it('a write token sees and can call upload_image', async () => {
+  it('a write token sees all tools and can call upload_image', async () => {
     const accessToken = await signIn(await createToken('Kari', 'write'))
-    expect(await toolNames(accessToken)).toEqual([...READ_TOOLS, 'upload_image'].sort())
+    expect(await toolNames(accessToken)).toEqual([...READ_TOOLS, ...WRITE_TOOLS].sort())
     expect(await callUpload(accessToken)).toMatch(/Only https/)
   })
 

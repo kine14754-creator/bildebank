@@ -41,9 +41,13 @@ the same code the `/api` routes use — and always work on tenant `default`.
 | `search_images` | Search by filename/alt text, `folderId` (recursive by default), `tagIds`; 25 per page (max 50) with `nextCursor`. **Text only** |
 | `view_image`    | 1–6 ids → each image as an MCP image block (WebP, longest side `maxSize`, default 512, max 1024, ≤150 KB) plus id/filename/url |
 | `get_image`     | Full metadata for one image, plus `sanity: { kind: 'url', url, source: { id, name: 'bildebank', url } }` |
+| `list_tags`     | All tags: id, name, image count. Use the ids with `search_images`, `upload_image` and `set_image_tags` |
+| `create_tag`    | **Write access only.** Create a tag by name; returns the existing tag (`existing: true`) if the name is taken, ignoring case |
+| `set_image_tags` | **Write access only.** Add (`addTagIds`) and/or remove (`removeTagIds`) tags on one image; other tags are left alone |
 | `upload_image`  | **Write access only.** Fetch a public https URL server-side and store it like `POST /api/images/upload`. Returns the existing image (`existing: true`) if the filename is taken, unless `force: true` |
 
-There are no delete, move or rename tools. Tools that change data are only registered for
+There are no delete, move or rename tools (removing a tag from an image is the only removal).
+The tag tools use the same service as the `/api/tags` routes (`src/services/tags.ts`). Tools that change data are only registered for
 tokens with write access, and refuse read tokens if called anyway; any new tool that mutates
 data must go inside `writeTools()` and call `requireWrite()` (see `src/mcp.ts`).
 
@@ -79,7 +83,7 @@ shown once, when it is created.
 | Access  | What the person can do                         |
 | ------- | ---------------------------------------------- |
 | `read`  | Default. Browse, search and view images        |
-| `write` | Everything `read` can, plus `upload_image`     |
+| `write` | Everything `read` can, plus `upload_image`, `create_tag` and `set_image_tags` |
 
 The access level is read from the store on every request, so `set-access` applies on the
 person's next request without reconnecting. (Cloudflare KV is eventually consistent: a change

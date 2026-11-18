@@ -1,16 +1,8 @@
 import { Hono } from 'hono'
-import { and, eq, sql } from 'drizzle-orm'
-import { createDb, imageTags, tags } from '../db'
+import { eq } from 'drizzle-orm'
+import { createDb, tags } from '../db'
+import { findExistingTag, insertTag, listTagsWithCounts } from '../services/tags'
 import type { Env } from '../types'
-
-function toSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^\w\s-]/g, '')
-    .replace(/[\s_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-}
 
 export const tagRoutes = new Hono<{ Bindings: Env }>()
 
@@ -19,21 +11,7 @@ tagRoutes.get('/', async (c) => {
   const db = createDb(c.env.DATABASE_URL)
   const tenantId = c.req.query('tenantId') || 'default'
 
-  const rows = await db
-    .select({
-      id: tags.id,
-      name: tags.name,
-      slug: tags.slug,
-      color: tags.color,
-      tenantId: tags.tenantId,
-      createdAt: tags.createdAt,
-      imageCount: sql<number>`count(${imageTags.imageId})::int`,
-    })
-    .from(tags)
-    .leftJoin(imageTags, eq(imageTags.tagId, tags.id))
-    .where(eq(tags.tenantId, tenantId))
-    .groupBy(tags.id)
-    .orderBy(tags.name)
+  const rows = await listTagsWithCounts(db, tenantId)
 
   return c.json({ data: rows })
 })
@@ -48,22 +26,12 @@ tagRoutes.post('/', async (c) => {
   }
 
   const tenantId = body.tenantId || 'default'
-  const slug = toSlug(body.name)
 
-  const existing = await db
-    .select({ id: tags.id })
-    .from(tags)
-    .where(and(eq(tags.tenantId, tenantId), eq(tags.slug, slug)))
-    .limit(1)
-
-  if (existing.length > 0) {
+  if (await findExistingTag(db, tenantId, body.name)) {
     return c.json({ error: 'A tag with this name already exists' }, 409)
   }
 
-  const [tag] = await db
-    .insert(tags)
-    .values({ name: body.name.trim(), slug, color: body.color ?? null, tenantId })
-    .returning()
+  const tag = await insertTag(db, { name: body.name, color: body.color, tenantId })
 
   return c.json(tag, 201)
 })
