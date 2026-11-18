@@ -6,6 +6,12 @@
  * every tool calls the worker's own service layer directly (src/services/*) —
  * no HTTP round trip to /api — and is served at /mcp behind OAuth (see oauth.ts).
  * There are deliberately no delete, move or rename tools.
+ *
+ * Access levels: every personal access token is "read" or "write". Tools that
+ * change data are registered inside writeTools(), which leaves them off the
+ * server entirely for read tokens, and their functions also call requireWrite()
+ * so they refuse a read context even if invoked some other way. Any new tool
+ * that mutates data must do both.
  */
 import { McpServer } from '@modelcontextprotocol/server'
 import { and, eq, inArray } from 'drizzle-orm'
@@ -35,6 +41,7 @@ import {
   RemoteFetchError,
   validateSourceUrl,
 } from './utils/remoteFetch'
+import type { Access } from './tokens'
 import type { Env } from './types'
 
 /** Every MCP call works on the default tenant, like the Studio plugin. */
@@ -50,6 +57,8 @@ export interface ToolContext {
   db: Db
   /** Public origin used to build file URLs, e.g. https://bildebank.x.workers.dev */
   baseUrl: string
+  /** Access level of the signed-in token. Write tools refuse anything but "write". */
+  access: Access
 }
 
 // ── Tool results ────────────────────────────────────────────────────────────
@@ -86,6 +95,15 @@ async function guarded(run: () => Promise<ToolResult>): Promise<ToolResult> {
   } catch (err) {
     if (err instanceof ToolError || err instanceof RemoteFetchError) return fail(err.message)
     return fail(`Unexpected error: ${errorMessage(err)}`)
+  }
+}
+
+/** Throw unless the caller's token has write access. Call first in every write tool. */
+function requireWrite(ctx: ToolContext): void {
+  if (ctx.access !== 'write') {
+    throw new ToolError(
+      'This personal access token is read-only. Ask the Bildebank admin for write access.'
+    )
   }
 }
 
@@ -329,6 +347,7 @@ export async function uploadImage(
   fetchImpl?: typeof fetch
 ): Promise<ToolResult> {
   return guarded(async () => {
+    requireWrite(ctx)
     const source = validateSourceUrl(input.sourceUrl)
     const filename = deriveFilename(input.filename, source)
     const tagIds = [...new Set(input.tagIds ?? [])]
@@ -377,9 +396,18 @@ export async function uploadImage(
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const
 
-export function createBildebankMcpServer(env: Env, baseUrl: string): McpServer {
+export function createBildebankMcpServer(
+  env: Env,
+  baseUrl: string,
+  access: Access = 'read'
+): McpServer {
   const server = new McpServer({ name: 'bildebank', version: '0.1.0' })
-  const ctx: ToolContext = { env, db: createDb(env.DATABASE_URL), baseUrl }
+  const ctx: ToolContext = { env, db: createDb(env.DATABASE_URL), baseUrl, access }
+
+  /** Tools that change data are registered inside this, so read tokens never see them. */
+  const writeTools = (register: () => void) => {
+    if (access === 'write') register()
+  }
 
   server.registerTool(
     'list_folders',
@@ -480,36 +508,39 @@ export function createBildebankMcpServer(env: Env, baseUrl: string): McpServer {
     async ({ id }) => getImage(ctx, { id })
   )
 
-  server.registerTool(
-    'upload_image',
-    {
-      title: 'Upload an image from a URL',
-      description:
-        'Add an image to the Bildebank library from a public https URL: the worker downloads it ' +
-        'and stores it like a normal upload. JPEG, PNG, WebP and SVG up to 20 MB. If an image with ' +
-        'the same filename already exists, that image is returned with existing: true and nothing ' +
-        'is uploaded — pass force: true only when a second copy is really wanted. The filename ' +
-        "defaults to the URL's last path segment. Returns id, url, webpUrl, filename, folderId, existing.",
-      inputSchema: z.object({
-        sourceUrl: z.string().url().describe('Public https URL of the image.'),
-        filename: z.string().max(200).optional().describe('Filename to store (default: from the URL).'),
-        altText: z.string().max(1000).optional().describe('Alt text describing the image.'),
-        folderId: uuid.optional().describe('Folder to put it in (see list_folders).'),
-        tagIds: z.array(uuid).optional().describe('Existing tag ids to attach.'),
-        force: z
-          .boolean()
-          .optional()
-          .describe('Upload even if an image with the same filename exists (default false).'),
-      }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: true,
+  // ── Write tools: write-access tokens only ──
+  writeTools(() => {
+    server.registerTool(
+      'upload_image',
+      {
+        title: 'Upload an image from a URL',
+        description:
+          'Add an image to the Bildebank library from a public https URL: the worker downloads it ' +
+          'and stores it like a normal upload. JPEG, PNG, WebP and SVG up to 20 MB. If an image with ' +
+          'the same filename already exists, that image is returned with existing: true and nothing ' +
+          'is uploaded — pass force: true only when a second copy is really wanted. The filename ' +
+          "defaults to the URL's last path segment. Returns id, url, webpUrl, filename, folderId, existing.",
+        inputSchema: z.object({
+          sourceUrl: z.string().url().describe('Public https URL of the image.'),
+          filename: z.string().max(200).optional().describe('Filename to store (default: from the URL).'),
+          altText: z.string().max(1000).optional().describe('Alt text describing the image.'),
+          folderId: uuid.optional().describe('Folder to put it in (see list_folders).'),
+          tagIds: z.array(uuid).optional().describe('Existing tag ids to attach.'),
+          force: z
+            .boolean()
+            .optional()
+            .describe('Upload even if an image with the same filename exists (default false).'),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
       },
-    },
-    async (input) => uploadImage(ctx, input)
-  )
+      async (input) => uploadImage(ctx, input)
+    )
+  })
 
   return server
 }

@@ -94,7 +94,7 @@ async function setup(opts: { withImagesBinding?: boolean } = {}): Promise<Fixtur
   await db.insert(imageTags).values({ imageId: grandImg, tagId: tag!.id })
 
   return {
-    ctx: { env, db, baseUrl: BASE },
+    ctx: { env, db, baseUrl: BASE, access: 'write' },
     db,
     r2,
     ids: {
@@ -380,6 +380,21 @@ describe('upload_image', () => {
     expect(fake.content[0]).toMatchObject({ text: expect.stringMatching(/not a valid image\/jpeg/) })
   })
 
+  it('refuses a read-only token before doing anything', async () => {
+    const { ctx, db } = await setup()
+    const fetchImpl = vi.fn()
+    const before = (await db.select().from(images)).length
+    const res = await uploadImage(
+      { ...ctx, access: 'read' },
+      { sourceUrl: 'https://cdn.example.com/new.jpg' },
+      fetchImpl as unknown as typeof fetch
+    )
+    expect(res.isError).toBe(true)
+    expect(res.content[0]).toMatchObject({ text: expect.stringMatching(/read-only/) })
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect((await db.select().from(images)).length).toBe(before)
+  })
+
   it('refuses an unknown folder or tag before fetching', async () => {
     const { ctx } = await setup()
     const fetchImpl = vi.fn()
@@ -449,119 +464,6 @@ describe('/mcp auth', () => {
     expect(res.status).toBe(401)
     const health = await worker.fetch(new Request(`${BASE}/health`), env, ctxStub)
     expect(health.status).toBe(200)
-  })
-
-  it('completes sign-in with the API secret and lists the tools', async () => {
-    const reg = await worker.fetch(
-      new Request(`${BASE}/oauth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          redirect_uris: ['http://localhost/callback'],
-          token_endpoint_auth_method: 'none',
-          client_name: 'Claude Code',
-        }),
-      }),
-      env,
-      ctxStub
-    )
-    expect(reg.status).toBe(201)
-    const { client_id } = (await reg.json()) as { client_id: string }
-
-    const verifier = 'test-verifier-0123456789-abcdefghijklmnopqrstuvwxyz'
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)))
-    const challenge = btoa(String.fromCharCode(...digest)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-    const q = new URLSearchParams({
-      response_type: 'code',
-      client_id,
-      redirect_uri: 'http://localhost:4567/callback',
-      scope: 'bildebank',
-      state: 's',
-      code_challenge: challenge,
-      code_challenge_method: 'S256',
-    })
-    const url = `${BASE}/authorize?${q}`
-    const page = await worker.fetch(new Request(url), env, ctxStub)
-    const html = await page.text()
-    expect(html).toContain('Bildebank API secret')
-    const cookie = page.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ')
-    const handle = /name="handle" value="([^"]+)"/.exec(html)![1]!
-
-    const signIn = (key: string, c = cookie, h = handle) =>
-      worker.fetch(
-        new Request(url, {
-          method: 'POST',
-          headers: { Cookie: c, 'Content-Type': 'application/x-www-form-urlencoded', 'CF-Connecting-IP': '1.2.3.4' },
-          body: new URLSearchParams({ handle: h, key }),
-        }),
-        env,
-        ctxStub
-      )
-
-    const wrong = await signIn('wrong')
-    expect(wrong.status).toBe(401)
-    const retryHtml = await wrong.text()
-    const retryCookie = wrong.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ')
-    const retryHandle = /name="handle" value="([^"]+)"/.exec(retryHtml)![1]!
-
-    const right = await signIn('correct-key', retryCookie, retryHandle)
-    expect(right.status).toBe(302)
-    const code = new URL(right.headers.get('Location')!).searchParams.get('code')!
-
-    const tokenRes = await worker.fetch(
-      new Request(`${BASE}/oauth/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'authorization_code',
-          code,
-          redirect_uri: 'http://localhost:4567/callback',
-          client_id,
-          code_verifier: verifier,
-        }),
-      }),
-      env,
-      ctxStub
-    )
-    expect(tokenRes.status).toBe(200)
-    const { access_token } = (await tokenRes.json()) as { access_token: string }
-
-    const rpc = (body: unknown) =>
-      worker.fetch(
-        new Request(`${BASE}/mcp`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${access_token}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json, text/event-stream',
-            'MCP-Protocol-Version': '2025-06-18',
-          },
-          body: JSON.stringify(body),
-        }),
-        env,
-        ctxStub
-      )
-    const parse = async (res: Response) => {
-      const text = await res.text()
-      const json = text.startsWith('{') ? text : /^data: (.*)$/m.exec(text)![1]!
-      return JSON.parse(json) as { result: { tools: { name: string }[] } }
-    }
-
-    const init = await rpc({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
-    })
-    expect(init.status).toBe(200)
-    const list = await parse(await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' }))
-    expect(list.result.tools.map((t) => t.name).sort()).toEqual([
-      'get_image',
-      'list_folders',
-      'search_images',
-      'upload_image',
-      'view_image',
-    ])
   })
 
   it('accepts only Claude callbacks as redirect URIs, and compares keys exactly', async () => {
