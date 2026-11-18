@@ -16,7 +16,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dev:db": "node scripts/local-neon.mjs"
+    "dev:db": "node scripts/local-neon.mjs",
+    "mcp-token": "node scripts/mcp-token.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^1.2.4",

@@ -12,9 +12,13 @@
  *   /.well-known/*, /oauth/token, /oauth/register → authorization server
  *   /authorize                                  → our sign-in page (below)
  *
- * There is one user — whoever holds API_SECRET, the same key the Studio plugin
- * sends to /api/*. The sign-in page asks for that key and nothing else; there is
- * no third-party identity provider.
+ * Each person signs in with their own named personal access token (src/tokens.ts),
+ * created and revoked through the admin routes (src/routes/admin.ts). The grant is
+ * issued to that token's own userId with the token name in props, and every /mcp
+ * request re-checks that the token still exists — so revoking a token cuts access
+ * on the next request. The shared API_SECRET is not accepted on the sign-in page;
+ * it only guards /api/* and the admin routes. There is no third-party identity
+ * provider.
  */
 import {
   AuthorizationError,
@@ -27,14 +31,19 @@ import {
 import { createMcpHandler } from 'agents/mcp/server'
 import type { Env } from './types'
 import { createBildebankMcpServer } from './mcp'
+import {
+  accessOf,
+  findTokenByRawToken,
+  resolveTokenGrant,
+  userIdFor,
+  type TokenProps,
+} from './tokens'
 
 export const MCP_PATH = '/mcp'
 export const AUTHORIZE_PATH = '/authorize'
 export const TOKEN_PATH = '/oauth/token'
 export const REGISTER_PATH = '/oauth/register'
 export const SCOPE = 'bildebank'
-/** The one subject every grant is issued to: the holder of API_SECRET. */
-const USER_ID = 'bildebank-api-secret'
 
 // ── Redirect URIs ───────────────────────────────────────────────────────────
 
@@ -120,11 +129,25 @@ export function getOAuthRoles(origin: string): OAuthRoles {
       resource_name: 'Bildebank',
     },
     requiredScopes: [SCOPE],
-    validateToken: (env) => (res, token) => authServer.validateToken(res, token, env),
+    // The library checks the token itself; on top of that, the personal access
+    // token it was issued for must still exist. A revoked token, or a grant from
+    // before personal tokens (no tokenName in props), gets a 401. The access
+    // level comes from the same lookup, not from the grant, so a change made
+    // with set-access applies on the next request.
+    validateToken: (env) => async (res, token) => {
+      const result = await authServer.validateToken(res, token, env)
+      if (!result || !env.OAUTH_KV) return null
+      const record = await resolveTokenGrant(env.OAUTH_KV, result.props)
+      if (!record) return null
+      const props = (result.props ?? {}) as Record<string, unknown>
+      return { ...result, props: { ...props, access: accessOf(record) } }
+    },
     handler: {
       fetch(request, env, ctx) {
         // Stateless: a fresh MCP server per request, as the agents docs require.
-        const handler = createMcpHandler(() => createBildebankMcpServer(env, origin), {
+        // Anything but an explicit "write" from the validator is read-only.
+        const access = ctx.props?.access === 'write' ? 'write' : 'read'
+        const handler = createMcpHandler(() => createBildebankMcpServer(env, origin, access), {
           route: MCP_PATH,
           authContext: { props: (ctx.props ?? {}) as Record<string, unknown> },
         })
@@ -148,6 +171,23 @@ const isResourcePath = (p: string) =>
 
 const isAuthServerPath = (p: string) =>
   p.startsWith('/.well-known/') || p === TOKEN_PATH || p === REGISTER_PATH
+
+/**
+ * Revoke every OAuth grant (and with it every access and refresh token) issued
+ * to one user. Returns how many grants were revoked.
+ */
+export async function revokeAllGrants(api: OAuthHelpers, userId: string): Promise<number> {
+  // Collect first, then revoke: deleting while paging could skip entries.
+  const ids: string[] = []
+  let cursor: string | undefined
+  do {
+    const page = await api.listUserGrants(userId, { cursor })
+    ids.push(...page.items.map((g) => g.id))
+    cursor = page.cursor
+  } while (cursor)
+  for (const id of ids) await api.revokeGrant(id, userId)
+  return ids.length
+}
 
 /**
  * Handle the MCP and OAuth paths; `null` for every other path, which the worker's
@@ -205,7 +245,7 @@ async function recordFailure(kv: KVNamespace, ip: string): Promise<void> {
 const encoder = new TextEncoder()
 
 /**
- * Compare a submitted key with API_SECRET in constant time. Both sides are
+ * Compare two secrets (or secret hashes) in constant time. Both sides are
  * hashed first, so the comparison always runs over 32 bytes whatever the input
  * length, and the XOR loop never exits early.
  */
@@ -289,8 +329,8 @@ ${
 ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
 <form method="post" action="${escapeHtml(action)}">
   <input type="hidden" name="handle" value="${escapeHtml(handle)}">
-  <label for="key">Bildebank API secret</label>
-  <input id="key" name="key" type="password" autocomplete="current-password" required autofocus>
+  <label for="key">Personal access token</label>
+  <input id="key" name="key" type="password" autocomplete="off" spellcheck="false" required autofocus>
   <button type="submit">Allow</button>
 </form>`
   return page(body, status, headers)
@@ -347,7 +387,7 @@ export async function handleAuthorize(
   }
 
   // POST: the form posts back to the same URL (query string included), so a wrong
-  // key can re-render the page from the original request.
+  // token can re-render the page from the original request.
   const kv = env.OAUTH_KV!
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
 
@@ -366,12 +406,14 @@ export async function handleAuthorize(
   } catch {
     return retry('The form could not be read. Try again.', 400)
   }
-  const key = String(form.get('key') ?? '')
+  const key = String(form.get('key') ?? '').trim()
   const handle = String(form.get('handle') ?? '')
 
-  if (!(await keysMatch(key, env.API_SECRET))) {
+  // Looked up by SHA-256 hash; the stored hash is then compared in constant time.
+  const record = key ? await findTokenByRawToken(kv, key, keysMatch) : null
+  if (!record) {
     await recordFailure(kv, ip)
-    return retry('That key is not correct.', 401)
+    return retry('That token is not valid.', 401)
   }
 
   let approved
@@ -382,18 +424,25 @@ export async function handleAuthorize(
   } catch (err) {
     return retry(
       err instanceof AuthorizationError
-        ? 'This sign-in page expired. Enter the key again.'
+        ? 'This sign-in page expired. Enter the token again.'
         : `Sign-in failed: ${err instanceof Error ? err.message : String(err)}`,
       400
     )
   }
 
+  const userId = userIdFor(record)
+  const props: TokenProps = {
+    user: userId,
+    tokenName: record.name,
+    tokenId: record.id,
+    access: accessOf(record),
+  }
   const { redirectTo } = await api.completeAuthorization({
     request: approved.request,
-    userId: USER_ID,
-    metadata: { label: 'Bildebank API secret' },
+    userId,
+    metadata: { label: `Personal access token: ${record.name}` },
     scope: [SCOPE],
-    props: { user: USER_ID },
+    props,
   })
 
   const headers = new Headers(approved.headers)
