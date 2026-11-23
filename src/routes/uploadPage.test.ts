@@ -230,6 +230,35 @@ describe('POST /upload/:token', () => {
     expect(await db.select().from(images)).toHaveLength(50)
   })
 
+  it('accepts files posted directly the way the tool result describes (no browser)', async () => {
+    const res = await createUploadLink(ctx, {})
+    const link = res.structuredContent as {
+      uploadEndpoint: string
+      fileField: string
+      forceField: string
+      sessionId: string
+    }
+    // Only what the result gives: endpoint, field names. No cookies, no page visit.
+    const send = (file: File, force = false) => {
+      const form = new FormData()
+      form.append(link.fileField, file)
+      if (force) form.append(link.forceField, '1')
+      return worker.fetch(
+        new Request(link.uploadEndpoint, { method: 'POST', body: form }),
+        ctx.env,
+        ctxStub,
+      )
+    }
+    expect((await send(jpeg('a.jpg'))).status).toBe(201)
+    expect((await send(new File([TINY_PNG], 'b.png', { type: 'image/png' }))).status).toBe(201)
+    expect((await send(jpeg('a.jpg'))).status).toBe(200)
+    expect((await send(jpeg('a.jpg'), true)).status).toBe(201)
+
+    const session = (await getUploadSessionTool(ctx, { sessionId: link.sessionId }))
+      .structuredContent as { images: { filename: string }[] }
+    expect(session.images.map((i) => i.filename)).toEqual(['a.jpg', 'b.png', 'a.jpg'])
+  })
+
   it('needs no API secret, and the token gives no access to /api', async () => {
     const { path } = await newLink()
     const token = path.split('/').pop()!

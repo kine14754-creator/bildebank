@@ -62,6 +62,8 @@ import {
   listUploadedFiles,
   UPLOAD_SESSION_MAX_FILES,
   UPLOAD_SESSION_MINUTES,
+  UPLOAD_FILE_FIELD,
+  UPLOAD_FORCE_FIELD,
   uploadUrl,
   type Actor,
 } from './uploadSessions'
@@ -603,14 +605,22 @@ export async function createUploadLink(
     )
     logWrite(ctx, 'create_upload_link', { sessionId: session.id, folderId: session.folderId, tagIds })
 
+    // The page and its upload endpoint share one URL: GET serves the page, POST takes a file.
+    const url = uploadUrl(ctx.baseUrl, token)
     return ok({
-      url: uploadUrl(ctx.baseUrl, token),
+      url,
+      uploadEndpoint: url,
+      fileField: UPLOAD_FILE_FIELD,
+      forceField: UPLOAD_FORCE_FIELD,
       expiresAt: session.expiresAt,
       sessionId: session.id,
       maxFiles: session.maxFiles,
       note:
-        'Give the url to the user to open in their browser. Anyone with the link can upload ' +
-        `until it expires. When they are done, call get_upload_session with the sessionId.`,
+        'If you can read the files yourself, POST each one as multipart/form-data to ' +
+        `uploadEndpoint (field "${UPLOAD_FILE_FIELD}", with the file's name and image Content-Type), ` +
+        'one request at a time. Otherwise give the url to the user to open in their browser. ' +
+        'Anyone with the link can upload until it expires. Afterwards call get_upload_session ' +
+        'with the sessionId.',
     })
   })
 }
@@ -825,7 +835,8 @@ export function createBildebankMcpServer(
         description:
           'Add an image to the Bildebank library from a public https URL: the worker downloads it ' +
           'and stores it like a normal upload. This cannot read files on the user\'s computer — ' +
-          'for local files, use create_upload_link instead. ' +
+          'for image files (attached in the chat, in your workspace or on the user\'s computer), ' +
+          'use create_upload_link instead. ' +
           'JPEG, PNG, WebP and SVG up to 20 MB. If an image with ' +
           'the same filename already exists, that image is returned with existing: true and nothing ' +
           'is uploaded — pass force: true only when a second copy is really wanted. The filename ' +
@@ -855,17 +866,27 @@ export function createBildebankMcpServer(
     server.registerTool(
       'create_upload_link',
       {
-        title: 'Create a link for uploading local files',
+        title: 'Upload image files (not URLs)',
         description:
-          'Use this when the user wants to upload images from their own computer (this server ' +
-          'cannot read local files, and upload_image only takes public URLs). Creates a ' +
-          `short-lived upload page — valid for ${UPLOAD_SESSION_MINUTES} minutes, up to ` +
-          `${UPLOAD_SESSION_MAX_FILES} files — and returns { url, expiresAt, sessionId }. Give the ` +
-          'url to the user; they open it in a browser and drag in or pick files (no sign-in: the ' +
-          'link itself is the credential, so share it only with them). Every file goes to folderId ' +
-          'and gets tagIds, with the same rules as upload_image (JPEG, PNG, WebP, SVG up to 20 MB; ' +
-          'a file whose filename already exists is skipped unless the user chooses to upload it ' +
-          'anyway). Afterwards call get_upload_session with the sessionId to get the new image ids.',
+          'Use this to upload image files rather than public URLs (upload_image only takes URLs, ' +
+          "and this server cannot read anyone's files). Creates a short-lived upload session — " +
+          `valid for ${UPLOAD_SESSION_MINUTES} minutes, up to ${UPLOAD_SESSION_MAX_FILES} files — ` +
+          'and returns { url, uploadEndpoint, fileField, forceField, expiresAt, sessionId }.\n\n' +
+          'If the files are in your own workspace (attached in the chat, or in a folder you can ' +
+          'read), upload them yourself: POST each file to uploadEndpoint as multipart/form-data ' +
+          `with the file in the "${UPLOAD_FILE_FIELD}" field (keep its filename and send its ` +
+          `image Content-Type, e.g. curl -F "${UPLOAD_FILE_FIELD}=@photo.jpg;type=image/jpeg" ` +
+          '<uploadEndpoint>), one request at a time, not in parallel. No other authentication is ' +
+          'needed. Each response is JSON: 201 { status: "uploaded", image }; 200 { status: ' +
+          '"existing", image } when an image with that filename already exists (nothing stored; ' +
+          `resend with ${UPLOAD_FORCE_FIELD}=1 only if a second copy is really wanted); or 4xx ` +
+          '{ status: "error", error }.\n\n' +
+          "Only if you cannot reach the files (they are on the user's computer), give the url to " +
+          'the user instead: it opens a drag-and-drop page in their browser. The link is the only ' +
+          'credential, so share it only with them.\n\n' +
+          'Every file goes to folderId and gets tagIds, with the same rules as upload_image ' +
+          '(JPEG, PNG, WebP, SVG up to 20 MB). Afterwards call get_upload_session with the ' +
+          'sessionId to get the new image ids.',
         inputSchema: z.object({
           folderId: uuid.optional().describe('Folder every upload goes into (see list_folders).'),
           tagIds: z

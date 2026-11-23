@@ -1,5 +1,7 @@
 /**
  * The upload page behind the MCP create_upload_link tool (see src/uploadSessions.ts).
+ * The POST endpoint is also called directly by Claude when it has the files itself
+ * (create_upload_link returns it as uploadEndpoint); the page is for everyone else.
  *
  *   GET  /upload/:token   → minimal drag-and-drop / file-picker page
  *   POST /upload/:token   multipart { file, force? } → JSON, one file per request
@@ -27,6 +29,8 @@ import {
   isExpired,
   listUploadedFiles,
   recordUploadedFile,
+  UPLOAD_FILE_FIELD,
+  UPLOAD_FORCE_FIELD,
   type UploadSession,
 } from '../uploadSessions'
 import type { Env } from '../types'
@@ -259,8 +263,8 @@ uploadPageRoutes.post('/:token', async (c) => {
   } catch {
     return fail('Invalid multipart/form-data', 400)
   }
-  const file = form.get('file')
-  if (!file || !(file instanceof File)) return fail('Missing "file" field', 400)
+  const file = form.get(UPLOAD_FILE_FIELD)
+  if (!file || !(file instanceof File)) return fail(`Missing "${UPLOAD_FILE_FIELD}" field`, 400)
   const mimeType = file.type
   if (!isAllowedMimeType(mimeType)) {
     return fail(
@@ -286,7 +290,7 @@ uploadPageRoutes.post('/:token', async (c) => {
     altText: img.altText,
   })
 
-  const force = form.get('force') === '1'
+  const force = form.get(UPLOAD_FORCE_FIELD) === '1'
   if (!force) {
     const [existing] = await findImagesByFilename(db, TENANT_ID, filename)
     if (existing) {

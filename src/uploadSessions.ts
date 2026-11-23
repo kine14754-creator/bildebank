@@ -145,3 +145,8 @@ export async function listUploadedFiles(
 }
 
 export const uploadUrl = (baseUrl: string, token: string) => `${baseUrl}${UPLOAD_PATH}/${token}`
+
+/** Multipart field names for POST /upload/:token (the page, or Claude posting directly). */
+export const UPLOAD_FILE_FIELD = 'file'
+/** Send "1" to upload even when an image with the same filename exists. */
+export const UPLOAD_FORCE_FIELD = 'force'

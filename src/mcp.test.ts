@@ -594,7 +594,15 @@ describe('update_image', () => {
 // ── create_upload_link / get_upload_session ─────────────────────────────────
 
 describe('create_upload_link', () => {
-  type Out = { url: string; expiresAt: string; sessionId: string; maxFiles: number }
+  type Out = {
+    url: string
+    uploadEndpoint: string
+    fileField: string
+    forceField: string
+    expiresAt: string
+    sessionId: string
+    maxFiles: number
+  }
   const actor = { tokenName: 'Kari', tokenId: 'tok-1' }
 
   it('creates a 30-minute session with folder, tags and the creating token', async () => {
@@ -607,6 +615,8 @@ describe('create_upload_link', () => {
     expect(out.expiresAt).toBe('2026-11-23T12:30:00.000Z')
     expect(out.maxFiles).toBe(50)
     expect(out.url).toMatch(new RegExp(`^${BASE}/upload/bb_up_[A-Za-z0-9_-]{43}$`))
+    // Claude can post straight to the endpoint the page uses.
+    expect(out).toMatchObject({ uploadEndpoint: out.url, fileField: 'file', forceField: 'force' })
 
     const kv = ctx.env.OAUTH_KV!
     const token = out.url.split('/').pop()!
