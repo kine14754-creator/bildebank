@@ -566,11 +566,6 @@ function logWrite(ctx: ToolContext, tool: string, details: Record<string, unknow
   )
 }
 
-function requireKv(ctx: ToolContext): KVNamespace {
-  if (!ctx.env.OAUTH_KV) throw new ToolError('Upload links are not configured on this worker (no OAUTH_KV).')
-  return ctx.env.OAUTH_KV
-}
-
 export async function createUploadLink(
   ctx: ToolContext,
   input: { folderId?: string; tagIds?: string[] },
@@ -578,7 +573,6 @@ export async function createUploadLink(
 ): Promise<ToolResult> {
   return guarded(async () => {
     requireWrite(ctx)
-    const kv = requireKv(ctx)
     const tagIds = [...new Set(input.tagIds ?? [])]
     if (tagIds.length > SET_TAGS_MAX) throw new ToolError(`Pass at most ${SET_TAGS_MAX} tag ids.`)
 
@@ -593,7 +587,7 @@ export async function createUploadLink(
       : []
 
     const { session, token } = await createUploadSession(
-      kv,
+      ctx.db,
       {
         folderId: input.folderId ?? null,
         folderPath,
@@ -631,14 +625,13 @@ export async function getUploadSessionTool(
   now = new Date()
 ): Promise<ToolResult> {
   return guarded(async () => {
-    const kv = requireKv(ctx)
-    const session = await loadUploadSession(kv, input.sessionId)
+    const session = await loadUploadSession(ctx.db, input.sessionId, now)
     if (!session) {
       throw new ToolError(
         `Upload session ${input.sessionId} not found. Sessions can be read for 24 hours after they are created.`
       )
     }
-    const files = await listUploadedFiles(kv, session.id)
+    const files = await listUploadedFiles(ctx.db, session.id)
     const rows = await getImagesByIds(ctx.db, files.map((f) => f.imageId))
     const byId = new Map(rows.filter((r) => r.tenantId === TENANT_ID).map((r) => [r.id, r]))
     const describe = (kind: 'uploaded' | 'existing') =>

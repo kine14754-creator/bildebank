@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from '../db'
 import { folders, images, imageTags, tags } from '../db'
 import { createUploadLink, getUploadSessionTool, type ToolContext } from '../mcp'
-import { fakeJpeg, makeDb, makeEnv, makeR2, TINY_PNG } from '../../test/helpers'
+import { fakeJpeg, jpegWithSize, makeDb, makeEnv, makeR2, TINY_PNG } from '../../test/helpers'
 
 let db: Db
 vi.mock('../db', async (importOriginal) => ({
@@ -270,5 +270,79 @@ describe('POST /upload/:token', () => {
       ctxStub,
     )
     expect(api.status).toBe(401)
+  })
+})
+
+// ── Regressions from the first production test ─────────────────────────────
+
+describe('production regressions', () => {
+  it('shows an upload in get_upload_session at once, from another Cloudflare location', async () => {
+    // In production the MCP call and the upload POST reach different Cloudflare
+    // locations. Each location has its own cached view of KV; only the database
+    // is shared and consistent. Model that: three envs with separate KV stores,
+    // one database. With sessions in KV this read back images: [], remaining: 50.
+    const mcpLocation = ctx
+    const uploadLocation = makeEnv({ R2_BUCKET: r2.bucket })
+    const readLocation: ToolContext = { ...ctx, env: makeEnv({ R2_BUCKET: r2.bucket }) }
+
+    const link = (await createUploadLink(mcpLocation, {})).structuredContent as {
+      uploadEndpoint: string
+      sessionId: string
+    }
+    const form = new FormData()
+    form.append('file', new File([jpegWithSize(732, 1080)], 'SGp1.jpg', { type: 'image/jpeg' }))
+    const res = await worker.fetch(
+      new Request(link.uploadEndpoint, { method: 'POST', body: form }),
+      uploadLocation,
+      ctxStub
+    )
+    expect(res.status).toBe(201)
+    const { image } = (await res.json()) as { image: { id: string } }
+
+    const session = (await getUploadSessionTool(readLocation, { sessionId: link.sessionId }))
+      .structuredContent as { images: { id: string; filename: string }[]; remaining: number }
+    expect(session.images).toEqual([expect.objectContaining({ id: image.id, filename: 'SGp1.jpg' })])
+    expect(session.remaining).toBe(49)
+  })
+
+  it('stores the same metadata as /api/images/upload for the same file, including its size', async () => {
+    const bytes = jpegWithSize(732, 1080)
+    const viaApi = async () => {
+      const form = new FormData()
+      form.append('file', new File([bytes], 'api.jpg', { type: 'image/jpeg' }))
+      const res = await worker.fetch(
+        new Request(`${BASE}/api/images/upload`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer correct-key' },
+          body: form,
+        }),
+        ctx.env,
+        ctxStub
+      )
+      expect(res.status).toBe(201)
+      return ((await res.json()) as { id: string }).id
+    }
+    const viaLink = async () => {
+      const { path } = await newLink()
+      const res = await post(path, new File([bytes], 'link.jpg', { type: 'image/jpeg' }))
+      expect(res.status).toBe(201)
+      return ((await res.json()) as { image: { id: string } }).image.id
+    }
+
+    const [apiId, linkId] = [await viaApi(), await viaLink()]
+    const rows = await db.select().from(images)
+    const pick = (id: string) => {
+      const r = rows.find((row) => row.id === id)!
+      return { width: r.width, height: r.height, mimeType: r.mimeType, size: r.size }
+    }
+    expect(pick(apiId)).toEqual({ width: 732, height: 1080, mimeType: 'image/jpeg', size: bytes.byteLength })
+    expect(pick(linkId)).toEqual(pick(apiId))
+
+    // webpUrl comes from the same place on both paths (WebP conversion is switched
+    // off for now, see utils/imageOptimize.ts), so it matches too.
+    const { getImage } = await import('../mcp')
+    const webp = async (id: string) =>
+      ((await getImage(ctx, { id })).structuredContent as { webpUrl: string | null }).webpUrl
+    expect(await webp(linkId)).toBe(await webp(apiId))
   })
 })

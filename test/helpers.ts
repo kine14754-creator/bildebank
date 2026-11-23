@@ -135,3 +135,23 @@ export function fakeJpeg(bytes: number): Uint8Array {
   out.set([0xff, 0xd8, 0xff, 0xe0])
   return out
 }
+
+/**
+ * A JPEG header with a real frame size: SOI, optional EXIF orientation (APP1,
+ * big-endian TIFF), SOF0 with width × height, EOI. Enough for header readers.
+ */
+export function jpegWithSize(width: number, height: number, orientation?: number): Uint8Array {
+  const parts: number[] = [0xff, 0xd8]
+  if (orientation) {
+    // TIFF: "MM", 42, IFD0 at 8, one entry: tag 0x0112, type SHORT, count 1, value.
+    const tiff = [0x4d, 0x4d, 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, orientation, 0, 0, 0, 0, 0, 0, 0, 0]
+    const payload = [...new TextEncoder().encode('Exif\0\0'), ...tiff]
+    const len = payload.length + 2
+    parts.push(0xff, 0xe1, len >> 8, len & 0xff, ...payload)
+  }
+  // SOF0: length 17, precision 8, height, width, 3 components.
+  parts.push(0xff, 0xc0, 0, 17, 8, height >> 8, height & 0xff, width >> 8, width & 0xff, 3)
+  parts.push(1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1)
+  parts.push(0xff, 0xd9)
+  return Uint8Array.from(parts)
+}

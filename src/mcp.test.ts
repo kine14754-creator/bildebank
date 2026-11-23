@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { folders, imageTags, images, tags, type Db } from './db'
+import { folders, imageTags, images, tags, uploadSessions, type Db } from './db'
 import worker from './index'
 import {
   createTag,
@@ -618,9 +618,8 @@ describe('create_upload_link', () => {
     // Claude can post straight to the endpoint the page uses.
     expect(out).toMatchObject({ uploadEndpoint: out.url, fileField: 'file', forceField: 'force' })
 
-    const kv = ctx.env.OAUTH_KV!
     const token = out.url.split('/').pop()!
-    const session = await findSessionByToken(kv, token)
+    const session = await findSessionByToken(ctx.db, token)
     expect(session).toMatchObject({
       id: out.sessionId,
       folderId: ids.child,
@@ -630,9 +629,7 @@ describe('create_upload_link', () => {
       createdBy: actor,
     })
     // Only the hash of the token is stored.
-    const keys = (await kv.list()).keys.map((k) => k.name)
-    const values = await Promise.all(keys.map((k) => kv.get(k)))
-    expect(JSON.stringify([keys, values])).not.toContain(token)
+    expect(JSON.stringify(await ctx.db.select().from(uploadSessions))).not.toContain(token)
     expect(log.mock.calls.map((c) => JSON.parse(c[0] as string))).toContainEqual(
       expect.objectContaining({ event: 'mcp.write', tool: 'create_upload_link', tokenName: 'Kari', sessionId: out.sessionId })
     )
@@ -646,7 +643,7 @@ describe('create_upload_link', () => {
     const res = await createUploadLink({ ...ctx, access: 'read' }, {})
     expect(res.isError).toBe(true)
     expect(res.content[0]).toMatchObject({ text: expect.stringMatching(/read-only/) })
-    expect((await ctx.env.OAUTH_KV!.list({ prefix: 'upload:' })).keys).toHaveLength(0)
+    expect(await ctx.db.select().from(uploadSessions)).toHaveLength(0)
   })
 })
 
@@ -663,15 +660,17 @@ describe('get_upload_session', () => {
     const { ctx, ids } = await setup()
     const now = new Date()
     const { sessionId } = data<{ sessionId: string }>(await createUploadLink(ctx, {}, now))
-    const kv = ctx.env.OAUTH_KV!
-    await recordUploadedFile(kv, sessionId, { imageId: ids.rootImg, kind: 'uploaded' }, new Date(now.getTime() + 1))
-    await recordUploadedFile(kv, sessionId, { imageId: ids.childImg, kind: 'uploaded' }, new Date(now.getTime() + 2))
-    await recordUploadedFile(kv, sessionId, { imageId: ids.otherImg, kind: 'existing' }, new Date(now.getTime() + 3))
-    // Deleted since: drops out of the list.
-    await recordUploadedFile(kv, sessionId, { imageId: crypto.randomUUID(), kind: 'uploaded' }, new Date(now.getTime() + 4))
+    const db = ctx.db
+    await recordUploadedFile(db, sessionId, { imageId: ids.rootImg, kind: 'uploaded' }, new Date(now.getTime() + 1))
+    await recordUploadedFile(db, sessionId, { imageId: ids.childImg, kind: 'uploaded' }, new Date(now.getTime() + 2))
+    await recordUploadedFile(db, sessionId, { imageId: ids.otherImg, kind: 'existing' }, new Date(now.getTime() + 3))
+    // Deleted since: its row cascades away and it drops out of the list.
+    await recordUploadedFile(db, sessionId, { imageId: ids.svgImg, kind: 'uploaded' }, new Date(now.getTime() + 4))
+    await db.delete(images).where(eq(images.id, ids.svgImg))
 
     const out = data<Out>(await getUploadSessionTool({ ...ctx, access: 'read' }, { sessionId }, now))
-    expect(out).toMatchObject({ sessionId, expired: false, remaining: 47 })
+    // Two stored and still present (the deleted one no longer counts).
+    expect(out).toMatchObject({ sessionId, expired: false, remaining: 48 })
     expect(out.images).toEqual([
       { id: ids.rootImg, filename: 'fjell.png', url: expect.stringMatching(`^${BASE}/files/`), altText: 'Fjelltopp i sol' },
       { id: ids.childImg, filename: 'skogsti.jpg', url: expect.any(String), altText: null },
@@ -680,7 +679,11 @@ describe('get_upload_session', () => {
 
     const later = new Date(now.getTime() + 31 * 60 * 1000)
     expect(data<Out>(await getUploadSessionTool(ctx, { sessionId }, later)).expired).toBe(true)
-    expect(await getUploadSession(kv, sessionId)).not.toBeNull()
+    expect(await getUploadSession(db, sessionId, later)).not.toBeNull()
+    // Readable for 24 hours, then gone.
+    const nextDay = new Date(now.getTime() + 25 * 60 * 60 * 1000)
+    const gone = await getUploadSessionTool(ctx, { sessionId }, nextDay)
+    expect(gone.content[0]).toMatchObject({ text: expect.stringMatching(/not found/) })
   })
 
   it('reports an unknown session', async () => {
