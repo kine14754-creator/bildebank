@@ -16,44 +16,41 @@
  *                                       (send again with force=1 to upload anyway)
  *   4xx { status: 'error', error }      not stored (unknown/expired link, bad file, limit reached)
  */
-import { Hono, type Context } from "hono";
-import { createDb } from "../db";
-import { publicOrigin } from "../oauth";
-import { buildImageUrl, isAllowedMimeType, MAX_FILE_SIZE } from "../r2/client";
-import { findImagesByFilename, storeImage } from "../services/images";
-import { cleanFilename, matchesMagicBytes } from "../utils/remoteFetch";
+import { Hono, type Context } from 'hono'
+import { createDb } from '../db'
+import { publicOrigin } from '../oauth'
+import { buildImageUrl, isAllowedMimeType, MAX_FILE_SIZE } from '../r2/client'
+import { findImagesByFilename, storeImage } from '../services/images'
+import { cleanFilename, matchesMagicBytes } from '../utils/remoteFetch'
 import {
   findSessionByToken,
   isExpired,
   listUploadedFiles,
   recordUploadedFile,
   type UploadSession,
-} from "../uploadSessions";
-import type { Env } from "../types";
+} from '../uploadSessions'
+import type { Env } from '../types'
 
-type Ctx = Context<{ Bindings: Env }>;
+type Ctx = Context<{ Bindings: Env }>
 
-const TENANT_ID = "default";
-const MAX_MB = MAX_FILE_SIZE / 1024 / 1024;
+const TENANT_ID = 'default'
+const MAX_MB = MAX_FILE_SIZE / 1024 / 1024
 
-export const uploadPageRoutes = new Hono<{ Bindings: Env }>();
+export const uploadPageRoutes = new Hono<{ Bindings: Env }>()
 
 const escapeHtml = (s: string) =>
   s.replace(
     /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        c
-      ]!,
-  );
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
+  )
 
 function pageHeaders(nonce?: string): Record<string, string> {
   return {
-    "Content-Type": "text/html; charset=utf-8",
-    "Cache-Control": "no-store",
-    "Content-Security-Policy": [
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': [
       "default-src 'none'",
-      nonce ? `script-src 'nonce-${nonce}'` : "",
+      nonce ? `script-src 'nonce-${nonce}'` : '',
       "style-src 'unsafe-inline'",
       "connect-src 'self'",
       "form-action 'none'",
@@ -61,12 +58,12 @@ function pageHeaders(nonce?: string): Record<string, string> {
       "base-uri 'none'",
     ]
       .filter(Boolean)
-      .join("; "),
-    "X-Frame-Options": "DENY",
+      .join('; '),
+    'X-Frame-Options': 'DENY',
     // The token is in the path: never send it on in a Referer.
-    "Referrer-Policy": "no-referrer",
-    "X-Robots-Tag": "noindex, nofollow",
-  };
+    'Referrer-Policy': 'no-referrer',
+    'X-Robots-Tag': 'noindex, nofollow',
+  }
 }
 
 const STYLE = `
@@ -86,71 +83,60 @@ const STYLE = `
   .status.bad { color: var(--bad); white-space: normal; text-align: right; }
   .status button { font: inherit; margin-left: .5rem; cursor: pointer; }
   .error { color: var(--bad); font-weight: 600; }
-`;
+`
 
-function shell(
-  title: string,
-  body: string,
-  status: number,
-  nonce?: string,
-): Response {
+function shell(title: string, body: string, status: number, nonce?: string): Response {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)}</title><style>${STYLE}</style></head><body>${body}</body></html>`;
-  return new Response(html, { status, headers: pageHeaders(nonce) });
+<title>${escapeHtml(title)}</title><style>${STYLE}</style></head><body>${body}</body></html>`
+  return new Response(html, { status, headers: pageHeaders(nonce) })
 }
 
 const deadLinkPage = (message: string, status: number) =>
   shell(
-    "Bildebank — upload link",
+    'Bildebank — upload link',
     `<h1>This upload link can't be used</h1><p class="error">${escapeHtml(message)}</p>
 <p>Ask Claude for a new upload link.</p>`,
     status,
-  );
+  )
 
-const EXPIRED_MESSAGE = "This upload link has expired.";
-const UNKNOWN_MESSAGE = "This upload link is not valid.";
+const EXPIRED_MESSAGE = 'This upload link has expired.'
+const UNKNOWN_MESSAGE = 'This upload link is not valid.'
 
 async function loadSession(
   c: Ctx,
 ): Promise<
-  | { session: UploadSession; kv: KVNamespace }
-  | { error: string; status: 404 | 410 | 503 }
+  { session: UploadSession; kv: KVNamespace } | { error: string; status: 404 | 410 | 503 }
 > {
-  const kv = c.env.OAUTH_KV;
-  if (!kv)
-    return { error: "Uploads are not configured on this worker.", status: 503 };
-  const session = await findSessionByToken(kv, c.req.param("token") ?? "");
-  if (!session) return { error: UNKNOWN_MESSAGE, status: 404 };
-  if (isExpired(session)) return { error: EXPIRED_MESSAGE, status: 410 };
-  return { session, kv };
+  const kv = c.env.OAUTH_KV
+  if (!kv) return { error: 'Uploads are not configured on this worker.', status: 503 }
+  const session = await findSessionByToken(kv, c.req.param('token') ?? '')
+  if (!session) return { error: UNKNOWN_MESSAGE, status: 404 }
+  if (isExpired(session)) return { error: EXPIRED_MESSAGE, status: 410 }
+  return { session, kv }
 }
 
-uploadPageRoutes.get("/:token", async (c) => {
-  const loaded = await loadSession(c);
-  if ("error" in loaded) return deadLinkPage(loaded.error, loaded.status);
-  const { session, kv } = loaded;
-  const used = (await listUploadedFiles(kv, session.id)).filter(
-    (f) => f.kind === "uploaded",
-  ).length;
+uploadPageRoutes.get('/:token', async (c) => {
+  const loaded = await loadSession(c)
+  if ('error' in loaded) return deadLinkPage(loaded.error, loaded.status)
+  const { session, kv } = loaded
+  const used = (await listUploadedFiles(kv, session.id)).filter((f) => f.kind === 'uploaded').length
 
   const where = [
-    session.folderPath
-      ? `Folder: <strong>${escapeHtml(session.folderPath)}</strong>`
-      : "No folder",
+    session.folderPath ? `Folder: <strong>${escapeHtml(session.folderPath)}</strong>` : 'No folder',
     session.tagNames.length
-      ? `Tags: <strong>${session.tagNames.map(escapeHtml).join(", ")}</strong>`
-      : "",
+      ? `Tags: <strong>${session.tagNames.map(escapeHtml).join(', ')}</strong>`
+      : '',
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(' · ')
 
-  const nonce = crypto.randomUUID().replace(/-/g, "");
+  const nonce = crypto.randomUUID().replace(/-/g, '')
   const config = JSON.stringify({
     expiresAt: session.expiresAt,
     remaining: Math.max(session.maxFiles - used, 0),
     maxBytes: MAX_FILE_SIZE,
-  }).replace(/</g, "\\u003c");
+  }).replace(/</g, '\\u003c')
 
   const body = `
 <h1>Upload images to Bildebank</h1>
@@ -162,9 +148,9 @@ uploadPageRoutes.get("/:token", async (c) => {
   <input type="file" id="files" multiple accept="image/jpeg,image/png,image/webp,image/svg+xml">
 </div>
 <ul id="list"></ul>
-<script nonce="${nonce}">${pageScript(config)}</script>`;
-  return shell("Bildebank — upload", body, 200, nonce);
-});
+<script nonce="${nonce}">${pageScript(config)}</script>`
+  return shell('Bildebank — upload', body, 200, nonce)
+})
 
 /** Client side: queue files, upload one at a time, show a status per file. */
 function pageScript(config: string): string {
@@ -255,83 +241,77 @@ function pageScript(config: string): string {
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
   drop.ondragleave = () => drop.classList.remove('over');
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); add(e.dataTransfer.files); };
-})();`;
+})();`
 }
 
-uploadPageRoutes.post("/:token", async (c) => {
-  c.header("Cache-Control", "no-store");
-  const fail = (
-    error: string,
-    status: 400 | 404 | 409 | 410 | 413 | 415 | 500 | 503,
-  ) => c.json({ status: "error", error }, status);
+uploadPageRoutes.post('/:token', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const fail = (error: string, status: 400 | 404 | 409 | 410 | 413 | 415 | 500 | 503) =>
+    c.json({ status: 'error', error }, status)
 
-  const loaded = await loadSession(c);
-  if ("error" in loaded) return fail(loaded.error, loaded.status);
-  const { session, kv } = loaded;
+  const loaded = await loadSession(c)
+  if ('error' in loaded) return fail(loaded.error, loaded.status)
+  const { session, kv } = loaded
 
-  let form: FormData;
+  let form: FormData
   try {
-    form = await c.req.formData();
+    form = await c.req.formData()
   } catch {
-    return fail("Invalid multipart/form-data", 400);
+    return fail('Invalid multipart/form-data', 400)
   }
-  const file = form.get("file");
-  if (!file || !(file instanceof File))
-    return fail('Missing "file" field', 400);
-  const mimeType = file.type;
+  const file = form.get('file')
+  if (!file || !(file instanceof File)) return fail('Missing "file" field', 400)
+  const mimeType = file.type
   if (!isAllowedMimeType(mimeType)) {
     return fail(
-      `Unsupported file type: ${mimeType || "unknown"}. Allowed: JPEG, PNG, WebP, SVG.`,
+      `Unsupported file type: ${mimeType || 'unknown'}. Allowed: JPEG, PNG, WebP, SVG.`,
       415,
-    );
+    )
   }
-  if (file.size > MAX_FILE_SIZE)
-    return fail(`File too large (max ${MAX_MB} MB)`, 413);
-  if (file.size === 0) return fail("The file is empty.", 400);
+  if (file.size > MAX_FILE_SIZE) return fail(`File too large (max ${MAX_MB} MB)`, 413)
+  if (file.size === 0) return fail('The file is empty.', 400)
 
-  const filename = cleanFilename(file.name);
-  const baseUrl = publicOrigin(c.req.raw, c.env);
-  const db = createDb(c.env.DATABASE_URL);
+  const filename = cleanFilename(file.name)
+  const baseUrl = publicOrigin(c.req.raw, c.env)
+  const db = createDb(c.env.DATABASE_URL)
   const describe = (img: {
-    id: string;
-    filename: string;
-    key: string;
-    altText: string | null;
+    id: string
+    filename: string
+    key: string
+    altText: string | null
   }) => ({
     id: img.id,
     filename: img.filename,
     url: buildImageUrl(baseUrl, img.key),
     altText: img.altText,
-  });
+  })
 
-  const force = form.get("force") === "1";
+  const force = form.get('force') === '1'
   if (!force) {
-    const [existing] = await findImagesByFilename(db, TENANT_ID, filename);
+    const [existing] = await findImagesByFilename(db, TENANT_ID, filename)
     if (existing) {
       await recordUploadedFile(kv, session.id, {
         imageId: existing.id,
-        kind: "existing",
-      });
-      return c.json({ status: "existing", image: describe(existing) }, 200);
+        kind: 'existing',
+      })
+      return c.json({ status: 'existing', image: describe(existing) }, 200)
     }
   }
 
-  const used = (await listUploadedFiles(kv, session.id)).filter(
-    (f) => f.kind === "uploaded",
-  ).length;
+  const used = (await listUploadedFiles(kv, session.id)).filter((f) => f.kind === 'uploaded').length
   if (used >= session.maxFiles) {
     return fail(
       `This link allows at most ${session.maxFiles} uploads. Ask Claude for a new link.`,
       409,
-    );
+    )
   }
 
-  const buffer = await file.arrayBuffer();
+  const buffer = await file.arrayBuffer()
   if (!matchesMagicBytes(new Uint8Array(buffer), mimeType)) {
-    return fail(`The file is not a valid ${mimeType} file.`, 415);
+    return fail(`The file is not a valid ${mimeType} file.`, 415)
   }
 
-  let image;
+  let image
   try {
     image = await storeImage(c.env, db, {
       buffer,
@@ -341,27 +321,24 @@ uploadPageRoutes.post("/:token", async (c) => {
       folderId: session.folderId,
       tenantId: TENANT_ID,
       tagIds: session.tagIds,
-    });
+    })
   } catch (err) {
     // E.g. the session's folder or a tag was deleted after the link was made.
-    console.error("upload link: storing failed", session.id, err);
-    return fail(
-      "The image could not be stored. Ask Claude for a new upload link.",
-      500,
-    );
+    console.error('upload link: storing failed', session.id, err)
+    return fail('The image could not be stored. Ask Claude for a new upload link.', 500)
   }
   await recordUploadedFile(kv, session.id, {
     imageId: image.id,
-    kind: "uploaded",
-  });
+    kind: 'uploaded',
+  })
   console.log(
     JSON.stringify({
-      event: "upload_link.upload",
+      event: 'upload_link.upload',
       sessionId: session.id,
       imageId: image.id,
       tokenName: session.createdBy?.tokenName ?? null,
       tokenId: session.createdBy?.tokenId ?? null,
     }),
-  );
-  return c.json({ status: "uploaded", image: describe(image) }, 201);
-});
+  )
+  return c.json({ status: 'uploaded', image: describe(image) }, 201)
+})
