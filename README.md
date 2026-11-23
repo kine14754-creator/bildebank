@@ -89,12 +89,19 @@ filename already exists is skipped, with an "Upload anyway" button. Afterwards C
 `get_upload_session` to get the new image ids and continue with `update_image` and
 `set_image_tags`.
 
-Sessions live in `OAUTH_KV` under `upload:` (`src/uploadSessions.ts`): only the SHA-256 of the
-link token is stored, and that index expires with the link; the session and its file list are
-kept for 24 hours so `get_upload_session` still works afterwards. The session records which
-personal access token created it. KV is eventually consistent, so the 50-file limit is exact
-only because uploads are sent one at a time (the page does this, and the tool description tells
-Claude to).
+Sessions live in Postgres, in `upload_sessions` and `upload_session_files`
+(`src/uploadSessions.ts`, migration `drizzle/0002_upload_sessions.sql`). Only the SHA-256 of the
+link token is stored. A session can be read for 24 hours after it is created, and older ones are
+deleted when a new one is made. The session records which personal access token created it.
+They used to live in KV, but the upload POST and the MCP call usually reach different Cloudflare
+locations, and KV reads are cached per location for up to about a minute, so
+`get_upload_session` could miss an upload that had just succeeded. In Postgres an upload is in
+the session as soon as the POST has answered.
+
+**Width and height** are read from the file header on every upload path (`storeImage`, and
+`PUT /api/images/:id/replace`): JPEG (adjusted for EXIF rotation), PNG, WebP, and SVG
+`width`/`height` or `viewBox`. Images uploaded before this have `null` until they are replaced.
+`webpUrl` stays `null` everywhere while WebP conversion is switched off (`src/utils/imageOptimize.ts`).
 
 **Attribution.** Every write through `/mcp` (`upload_image`, `create_upload_link`,
 `update_image`, `create_tag`, `set_image_tags`) logs one JSON line with `event: "mcp.write"`,

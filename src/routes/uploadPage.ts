@@ -19,7 +19,7 @@
  *   4xx { status: 'error', error }      not stored (unknown/expired link, bad file, limit reached)
  */
 import { Hono, type Context } from 'hono'
-import { createDb } from '../db'
+import { createDb, type Db } from '../db'
 import { publicOrigin } from '../oauth'
 import { buildImageUrl, isAllowedMimeType, MAX_FILE_SIZE } from '../r2/client'
 import { findImagesByFilename, storeImage } from '../services/images'
@@ -27,7 +27,7 @@ import { cleanFilename, matchesMagicBytes } from '../utils/remoteFetch'
 import {
   findSessionByToken,
   isExpired,
-  listUploadedFiles,
+  countUploadedFiles,
   recordUploadedFile,
   UPLOAD_FILE_FIELD,
   UPLOAD_FORCE_FIELD,
@@ -110,21 +110,20 @@ const UNKNOWN_MESSAGE = 'This upload link is not valid.'
 async function loadSession(
   c: Ctx,
 ): Promise<
-  { session: UploadSession; kv: KVNamespace } | { error: string; status: 404 | 410 | 503 }
+  { session: UploadSession; db: Db } | { error: string; status: 404 | 410 }
 > {
-  const kv = c.env.OAUTH_KV
-  if (!kv) return { error: 'Uploads are not configured on this worker.', status: 503 }
-  const session = await findSessionByToken(kv, c.req.param('token') ?? '')
+  const db = createDb(c.env.DATABASE_URL)
+  const session = await findSessionByToken(db, c.req.param('token') ?? '')
   if (!session) return { error: UNKNOWN_MESSAGE, status: 404 }
   if (isExpired(session)) return { error: EXPIRED_MESSAGE, status: 410 }
-  return { session, kv }
+  return { session, db }
 }
 
 uploadPageRoutes.get('/:token', async (c) => {
   const loaded = await loadSession(c)
   if ('error' in loaded) return deadLinkPage(loaded.error, loaded.status)
-  const { session, kv } = loaded
-  const used = (await listUploadedFiles(kv, session.id)).filter((f) => f.kind === 'uploaded').length
+  const { session, db } = loaded
+  const used = await countUploadedFiles(db, session.id)
 
   const where = [
     session.folderPath ? `Folder: <strong>${escapeHtml(session.folderPath)}</strong>` : 'No folder',
@@ -250,12 +249,12 @@ function pageScript(config: string): string {
 
 uploadPageRoutes.post('/:token', async (c) => {
   c.header('Cache-Control', 'no-store')
-  const fail = (error: string, status: 400 | 404 | 409 | 410 | 413 | 415 | 500 | 503) =>
+  const fail = (error: string, status: 400 | 404 | 409 | 410 | 413 | 415 | 500) =>
     c.json({ status: 'error', error }, status)
 
   const loaded = await loadSession(c)
   if ('error' in loaded) return fail(loaded.error, loaded.status)
-  const { session, kv } = loaded
+  const { session, db } = loaded
 
   let form: FormData
   try {
@@ -277,7 +276,6 @@ uploadPageRoutes.post('/:token', async (c) => {
 
   const filename = cleanFilename(file.name)
   const baseUrl = publicOrigin(c.req.raw, c.env)
-  const db = createDb(c.env.DATABASE_URL)
   const describe = (img: {
     id: string
     filename: string
@@ -294,7 +292,7 @@ uploadPageRoutes.post('/:token', async (c) => {
   if (!force) {
     const [existing] = await findImagesByFilename(db, TENANT_ID, filename)
     if (existing) {
-      await recordUploadedFile(kv, session.id, {
+      await recordUploadedFile(db, session.id, {
         imageId: existing.id,
         kind: 'existing',
       })
@@ -302,7 +300,7 @@ uploadPageRoutes.post('/:token', async (c) => {
     }
   }
 
-  const used = (await listUploadedFiles(kv, session.id)).filter((f) => f.kind === 'uploaded').length
+  const used = await countUploadedFiles(db, session.id)
   if (used >= session.maxFiles) {
     return fail(
       `This link allows at most ${session.maxFiles} uploads. Ask Claude for a new link.`,
@@ -331,7 +329,7 @@ uploadPageRoutes.post('/:token', async (c) => {
     console.error('upload link: storing failed', session.id, err)
     return fail('The image could not be stored. Ask Claude for a new upload link.', 500)
   }
-  await recordUploadedFile(kv, session.id, {
+  await recordUploadedFile(db, session.id, {
     imageId: image.id,
     kind: 'uploaded',
   })

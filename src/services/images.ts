@@ -2,6 +2,7 @@ import { and, asc, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-o
 import { folders, images, imageTags, tags, type Db, type Image } from '../db'
 import { buildImageUrl, buildR2Key, uploadToR2, type AllowedMimeType } from '../r2/client'
 import { canConvertToWebP, convertToWebP, toWebPKey } from '../utils/imageOptimize'
+import { readImageSize } from '../utils/imageSize'
 import { collectFolderSubtree } from './folders'
 import type { Env } from '../types'
 
@@ -150,7 +151,8 @@ export interface StoreImageInput {
 
 /**
  * The upload pipeline shared by POST /api/images/upload and the MCP upload_image
- * tool: original to R2, best-effort WebP variant, then the database row (and tags).
+ * tool and the upload-link page: original to R2, best-effort WebP variant, then the
+ * database row (with width/height read from the file header) and tags.
  * The caller validates type and size first.
  */
 export async function storeImage(env: Env, db: Db, input: StoreImageInput): Promise<Image> {
@@ -169,6 +171,7 @@ export async function storeImage(env: Env, db: Db, input: StoreImageInput): Prom
     }
   }
 
+  const dimensions = readImageSize(input.buffer, input.mimeType)
   const [image] = await db
     .insert(images)
     .values({
@@ -177,6 +180,8 @@ export async function storeImage(env: Env, db: Db, input: StoreImageInput): Prom
       filename: input.filename,
       size: input.buffer.byteLength,
       mimeType: input.mimeType,
+      width: dimensions?.width ?? null,
+      height: dimensions?.height ?? null,
       altText: input.altText,
       folderId: input.folderId ?? undefined,
       tenantId: input.tenantId,

@@ -6,20 +6,17 @@
  * worker (src/routes/uploadPage.ts). The random token in that link is the only
  * credential: it allows uploading into this one session and nothing else.
  *
- * Stored in OAUTH_KV next to the personal access tokens (`pat:`), under `upload:`:
+ * Stored in Postgres (tables upload_sessions and upload_session_files), not KV.
+ * The upload POST and the MCP get_upload_session call usually arrive at different
+ * Cloudflare locations, and KV reads are cached per location (up to ~60 s), so a
+ * file recorded in KV by one could be invisible to the other. Postgres is one
+ * consistent store: an upload is in the session as soon as the POST has answered.
  *
- *   upload:token:<sha-256 of token>      → session id      (TTL: the upload window)
- *   upload:session:<id>                  → UploadSession   (TTL: RETAIN_SECONDS)
- *   upload:file:<id>:<imageId>           → UploadedFile    (TTL: RETAIN_SECONDS)
- *
- * The token itself is never stored. The session and its file list outlive the
- * upload window (RETAIN_SECONDS) so get_upload_session still works afterwards.
- * One key per file, rather than a list on the session, so two uploads finishing
- * at once cannot overwrite each other's entries.
- *
- * KV is eventually consistent, so the file limit is a brake, not an exact
- * counter: the page uploads one file at a time, which keeps it exact in practice.
+ * Only the SHA-256 of the link token is stored. A session is readable for
+ * RETAIN_SECONDS after it is created; older ones are deleted when a new one is made.
  */
+import { and, asc, count, eq, lt } from 'drizzle-orm'
+import { uploadSessionFiles, uploadSessions, type Db } from './db'
 import { sha256Hex, type TokenProps } from './tokens'
 
 export const UPLOAD_SESSION_MINUTES = 30
@@ -29,9 +26,7 @@ export const UPLOAD_SESSION_RETAIN_SECONDS = 24 * 60 * 60
 export const UPLOAD_PATH = '/upload'
 
 const TOKEN_PREFIX = 'bb_up_'
-const tokenKey = (hash: string) => `upload:token:${hash}`
-const sessionKey = (id: string) => `upload:session:${id}`
-const filePrefix = (id: string) => `upload:file:${id}:`
+const TENANT_ID = 'default'
 
 /** The personal access token that created a session (logged and stored for attribution). */
 export type Actor = Pick<TokenProps, 'tokenName' | 'tokenId'>
@@ -69,79 +64,112 @@ function generateToken(): string {
 export const isExpired = (session: UploadSession, now = new Date()) =>
   now.getTime() >= Date.parse(session.expiresAt)
 
+type Row = typeof uploadSessions.$inferSelect
+
+const toSession = (row: Row): UploadSession => ({
+  id: row.id,
+  createdAt: row.createdAt.toISOString(),
+  expiresAt: row.expiresAt.toISOString(),
+  maxFiles: row.maxFiles,
+  folderId: row.folderId,
+  folderPath: row.folderPath,
+  tagIds: row.tagIds,
+  tagNames: row.tagNames,
+  createdBy: row.createdBy ?? null,
+})
+
 export async function createUploadSession(
-  kv: KVNamespace,
+  db: Db,
   input: Pick<UploadSession, 'folderId' | 'folderPath' | 'tagIds' | 'tagNames' | 'createdBy'>,
-  now = new Date(),
+  now = new Date()
 ): Promise<{ session: UploadSession; token: string }> {
-  const ttl = UPLOAD_SESSION_MINUTES * 60
-  const session: UploadSession = {
-    id: crypto.randomUUID(),
-    createdAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + ttl * 1000).toISOString(),
-    maxFiles: UPLOAD_SESSION_MAX_FILES,
-    ...input,
-  }
+  // Housekeeping: sessions past the read window (their file rows cascade).
+  await db
+    .delete(uploadSessions)
+    .where(
+      lt(uploadSessions.createdAt, new Date(now.getTime() - UPLOAD_SESSION_RETAIN_SECONDS * 1000))
+    )
+
   const token = generateToken()
-  // Session first: a token index pointing at nothing is just a dead link.
-  await kv.put(sessionKey(session.id), JSON.stringify(session), {
-    expirationTtl: UPLOAD_SESSION_RETAIN_SECONDS,
-  })
-  await kv.put(tokenKey(await sha256Hex(token)), session.id, {
-    expirationTtl: ttl,
-  })
-  return { session, token }
+  const [row] = await db
+    .insert(uploadSessions)
+    .values({
+      tokenHash: await sha256Hex(token),
+      tenantId: TENANT_ID,
+      folderId: input.folderId,
+      folderPath: input.folderPath,
+      tagIds: input.tagIds,
+      tagNames: input.tagNames,
+      maxFiles: UPLOAD_SESSION_MAX_FILES,
+      createdBy: input.createdBy,
+      createdAt: now,
+      expiresAt: new Date(now.getTime() + UPLOAD_SESSION_MINUTES * 60 * 1000),
+    })
+    .returning()
+  return { session: toSession(row!), token }
 }
 
-export async function getUploadSession(kv: KVNamespace, id: string): Promise<UploadSession | null> {
-  return kv.get<UploadSession>(sessionKey(id), 'json')
+/** A session by id, or null when unknown or older than the read window. */
+export async function getUploadSession(
+  db: Db,
+  id: string,
+  now = new Date()
+): Promise<UploadSession | null> {
+  const [row] = await db.select().from(uploadSessions).where(eq(uploadSessions.id, id)).limit(1)
+  if (!row) return null
+  const tooOld = now.getTime() - row.createdAt.getTime() > UPLOAD_SESSION_RETAIN_SECONDS * 1000
+  return tooOld ? null : toSession(row)
 }
 
 /** The session a link token belongs to, or null for an unknown token. Expiry is the caller's check. */
-export async function findSessionByToken(
-  kv: KVNamespace,
-  token: string,
-): Promise<UploadSession | null> {
+export async function findSessionByToken(db: Db, token: string): Promise<UploadSession | null> {
   if (!token.startsWith(TOKEN_PREFIX)) return null
-  const id = await kv.get(tokenKey(await sha256Hex(token)))
-  return id ? getUploadSession(kv, id) : null
+  const [row] = await db
+    .select()
+    .from(uploadSessions)
+    .where(eq(uploadSessions.tokenHash, await sha256Hex(token)))
+    .limit(1)
+  return row ? toSession(row) : null
 }
 
 export async function recordUploadedFile(
-  kv: KVNamespace,
+  db: Db,
   sessionId: string,
   file: Omit<UploadedFile, 'at'>,
-  now = new Date(),
+  now = new Date()
 ): Promise<void> {
-  const key = `${filePrefix(sessionId)}${file.imageId}`
-  // Picking a file again that this session already uploaded hits the duplicate
-  // check; it must stay listed as uploaded, not turn into "existing".
-  if (file.kind === 'existing') {
-    const current = await kv.get<UploadedFile>(key, 'json')
-    if (current?.kind === 'uploaded') return
-  }
-  const entry: UploadedFile = { ...file, at: now.toISOString() }
-  await kv.put(key, JSON.stringify(entry), {
-    expirationTtl: UPLOAD_SESSION_RETAIN_SECONDS,
-  })
+  // One row per (session, image). Picking a file again that this session already
+  // uploaded hits the duplicate check; the existing "uploaded" row is kept, so it
+  // never turns into "existing".
+  await db
+    .insert(uploadSessionFiles)
+    .values({ sessionId, imageId: file.imageId, kind: file.kind, createdAt: now })
+    .onConflictDoNothing()
 }
 
 /** Every file recorded for a session, oldest first. */
-export async function listUploadedFiles(
-  kv: KVNamespace,
-  sessionId: string,
-): Promise<UploadedFile[]> {
-  const keys: string[] = []
-  let cursor: string | undefined
-  do {
-    const page = await kv.list({ prefix: filePrefix(sessionId), cursor })
-    keys.push(...page.keys.map((k) => k.name))
-    cursor = page.list_complete ? undefined : (page as { cursor?: string }).cursor
-  } while (cursor)
-  const entries = await Promise.all(keys.map((k) => kv.get<UploadedFile>(k, 'json')))
-  return entries
-    .filter((e): e is UploadedFile => e !== null)
-    .sort((a, b) => a.at.localeCompare(b.at))
+export async function listUploadedFiles(db: Db, sessionId: string): Promise<UploadedFile[]> {
+  const rows = await db
+    .select()
+    .from(uploadSessionFiles)
+    .where(eq(uploadSessionFiles.sessionId, sessionId))
+    .orderBy(asc(uploadSessionFiles.createdAt), asc(uploadSessionFiles.imageId))
+  return rows.map((r) => ({
+    imageId: r.imageId,
+    kind: r.kind === 'existing' ? 'existing' : 'uploaded',
+    at: r.createdAt.toISOString(),
+  }))
+}
+
+/** How many files this session has stored (duplicates that were skipped don't count). */
+export async function countUploadedFiles(db: Db, sessionId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(uploadSessionFiles)
+    .where(
+      and(eq(uploadSessionFiles.sessionId, sessionId), eq(uploadSessionFiles.kind, 'uploaded'))
+    )
+  return Number(row?.n ?? 0)
 }
 
 export const uploadUrl = (baseUrl: string, token: string) => `${baseUrl}${UPLOAD_PATH}/${token}`

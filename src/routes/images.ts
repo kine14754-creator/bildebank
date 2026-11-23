@@ -9,6 +9,7 @@ import {
   deleteFromR2,
 } from '../r2/client'
 import { canConvertToWebP, convertToWebP, toWebPKey } from '../utils/imageOptimize'
+import { readImageSize } from '../utils/imageSize'
 import { maybeWebpUrl, queryImages, storeImage, tagsForImages } from '../services/images'
 import type { Env } from '../types'
 
@@ -156,7 +157,19 @@ imageRoutes.put('/:id/replace', async (c) => {
   }
 
   // The row was found above, so the update returns it.
-  const [updated] = (await db.update(images).set({ filename: file.name, size: file.size, mimeType }).where(eq(images.id, id)).returning()) as [typeof image]
+  const dimensions = readImageSize(buffer, mimeType)
+  const [updated] = (await db
+    .update(images)
+    .set({
+      filename: file.name,
+      size: file.size,
+      mimeType,
+      width: dimensions?.width ?? null,
+      height: dimensions?.height ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(images.id, id))
+    .returning()) as [typeof image]
   const baseUrl = new URL(c.req.url).origin
   return c.json({ ...updated, url: buildImageUrl(baseUrl, updated.key), webpUrl: maybeWebpUrl(baseUrl, updated.key, updated.mimeType) })
 })
