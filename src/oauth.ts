@@ -147,7 +147,13 @@ export function getOAuthRoles(origin: string): OAuthRoles {
         // Stateless: a fresh MCP server per request, as the agents docs require.
         // Anything but an explicit "write" from the validator is read-only.
         const access = ctx.props?.access === 'write' ? 'write' : 'read'
-        const handler = createMcpHandler(() => createBildebankMcpServer(env, origin, access), {
+        // Which personal access token is calling, so writes can be attributed.
+        const { tokenName, tokenId } = (ctx.props ?? {}) as Partial<TokenProps>
+        const actor =
+          typeof tokenName === 'string' && typeof tokenId === 'string'
+            ? { tokenName, tokenId }
+            : undefined
+        const handler = createMcpHandler(() => createBildebankMcpServer(env, origin, access, actor), {
           route: MCP_PATH,
           authContext: { props: (ctx.props ?? {}) as Record<string, unknown> },
         })

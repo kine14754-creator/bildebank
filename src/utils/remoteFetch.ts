@@ -219,6 +219,15 @@ export function deriveFilename(given: string | undefined, sourceUrl: URL): strin
       name = last
     }
   }
+  return cleanFilename(name)
+}
+
+/**
+ * Make a filename safe to store: control characters and slashes become "_",
+ * at most 200 characters, "image" if nothing is left. Shared by upload_image
+ * and the upload-link page.
+ */
+export function cleanFilename(name: string): string {
   // eslint-disable-next-line no-control-regex
   return name.replace(/[\u0000-\u001f\u007f/\\]/g, '_').trim().slice(0, 200) || 'image'
 }

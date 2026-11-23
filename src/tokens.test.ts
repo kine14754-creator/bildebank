@@ -194,8 +194,15 @@ async function callUpload(accessToken: string) {
   return body.error?.message ?? body.result!.content.map((c) => c.text).join('\n')
 }
 
-const READ_TOOLS = ['get_image', 'list_folders', 'list_tags', 'search_images', 'view_image']
-const WRITE_TOOLS = ['create_tag', 'set_image_tags', 'upload_image']
+const READ_TOOLS = [
+  'get_image',
+  'get_upload_session',
+  'list_folders',
+  'list_tags',
+  'search_images',
+  'view_image',
+]
+const WRITE_TOOLS = ['create_tag', 'create_upload_link', 'set_image_tags', 'update_image', 'upload_image']
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
