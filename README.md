@@ -11,6 +11,7 @@ the MCP server at `/mcp`.
 | `/api/*`        | `Authorization: Bearer <API_SECRET>` | Images, folders, tags (Studio plugin) |
 | `/admin/mcp-tokens` | `Authorization: Bearer <ADMIN_SECRET>` | Create, list, change and revoke personal access tokens for `/mcp` |
 | `/mcp`          | OAuth 2.1 (sign in with a personal access token) | MCP server for Claude |
+| `/upload/<token>` | the token in the link (from `create_upload_link`) | `GET`: upload page in the browser. `POST`: one file (multipart field `file`), used by the page or by Claude directly |
 
 ## Development
 
@@ -44,9 +45,13 @@ the same code the `/api` routes use — and always work on tenant `default`.
 | `list_tags`     | All tags: id, name, image count. Use the ids with `search_images`, `upload_image` and `set_image_tags` |
 | `create_tag`    | **Write access only.** Create a tag by name; returns the existing tag (`existing: true`) if the name is taken, ignoring case |
 | `set_image_tags` | **Write access only.** Add (`addTagIds`) and/or remove (`removeTagIds`) tags on one image; other tags are left alone |
+| `get_upload_session` | Images uploaded through a `create_upload_link` link: `images` (id, filename, url, altText), `alreadyInLibrary` (files skipped because the filename existed), `expired`, `remaining`. Readable for 24 hours |
 | `upload_image`  | **Write access only.** Fetch a public https URL server-side and store it like `POST /api/images/upload`. Returns the existing image (`existing: true`) if the filename is taken, unless `force: true` |
+| `create_upload_link` | **Write access only.** For image files rather than URLs: `folderId?`, `tagIds?` → `{ url, uploadEndpoint, fileField, forceField, expiresAt, sessionId, maxFiles }`. Claude posts files it can read straight to `uploadEndpoint`; otherwise the user opens `url`. Up to 50 files within 30 minutes (see below) |
+| `update_image`  | **Write access only.** Change `altText`, `filename` and/or `folderId` on one image (only the fields given; an empty `altText` clears it). Returns the same metadata as `get_image`. Tags stay in `set_image_tags` |
 
-There are no delete, move or rename tools (removing a tag from an image is the only removal).
+There are no delete tools (removing a tag from an image is the only removal); `update_image`
+is the only way to rename an image or move it to another folder.
 The tag tools use the same service as the `/api/tags` routes (`src/services/tags.ts`). Tools that change data are only registered for
 tokens with write access, and refuse read tokens if called anyway; any new tool that mutates
 data must go inside `writeTools()` and call `requireWrite()` (see `src/mcp.ts`).
@@ -60,6 +65,42 @@ checked), max 20 MB (checked against Content-Length and while streaming), `https
 port 443 only, no embedded credentials, and no localhost / internal names / private, link-local
 or reserved IPs / IPv6 literals. Redirects are followed by hand (max 5) and each hop is
 checked again; the `global_fetch_strictly_public` flag keeps the fetch on the public internet.
+
+**Upload links (`create_upload_link`).** MCP tool calls can't carry files and the server can't
+read anyone's files, so `create_upload_link` creates an upload session and returns
+`/upload/<token>` twice: as `url`, a minimal drag-and-drop / file-picker page served by this
+worker (`src/routes/uploadPage.ts`), and as `uploadEndpoint`, the same URL that the page POSTs
+to. When Claude has the files in its own workspace (attached in the chat, or in a connected
+folder), it posts them straight to `uploadEndpoint`, one at a time, with no browser involved:
+
+```bash
+curl -F "file=@photo.jpg;type=image/jpeg" "$uploadEndpoint"   # add -F force=1 to upload a duplicate filename anyway
+```
+
+The page is for when Claude can't reach the files. Answers are JSON: `201 { status: "uploaded",
+image }`, `200 { status: "existing", image }` (an image with that filename exists; nothing stored)
+or `4xx { status: "error", error }`. There is no sign-in: the random token in the link is the only
+credential, and it only allows uploading into that session — up to 50 files, for 30 minutes.
+Each file is posted on its own
+and goes through the same pipeline as `POST /api/images/upload` (`storeImage`: JPEG/PNG/WebP/SVG,
+max 20 MB, WebP handling), with `upload_image`'s magic-byte check and same-filename check, and
+gets the session's folder and tags. The page shows success or failure per file; a file whose
+filename already exists is skipped, with an "Upload anyway" button. Afterwards Claude calls
+`get_upload_session` to get the new image ids and continue with `update_image` and
+`set_image_tags`.
+
+Sessions live in `OAUTH_KV` under `upload:` (`src/uploadSessions.ts`): only the SHA-256 of the
+link token is stored, and that index expires with the link; the session and its file list are
+kept for 24 hours so `get_upload_session` still works afterwards. The session records which
+personal access token created it. KV is eventually consistent, so the 50-file limit is exact
+only because uploads are sent one at a time (the page does this, and the tool description tells
+Claude to).
+
+**Attribution.** Every write through `/mcp` (`upload_image`, `create_upload_link`,
+`update_image`, `create_tag`, `set_image_tags`) logs one JSON line with `event: "mcp.write"`,
+the tool and the personal access token's name and id; each file uploaded through a link logs
+`event: "upload_link.upload"` with the token that created the link. Read them with
+`npx wrangler tail`.
 
 **Sign-in** is OAuth 2.1. The `/authorize` page asks for a **personal access token**: one per
 person, named, created by the admin with `npm run mcp-token` (below). The shared `API_SECRET`
@@ -83,7 +124,7 @@ shown once, when it is created.
 | Access  | What the person can do                         |
 | ------- | ---------------------------------------------- |
 | `read`  | Default. Browse, search and view images        |
-| `write` | Everything `read` can, plus `upload_image`, `create_tag` and `set_image_tags` |
+| `write` | Everything `read` can, plus `upload_image`, `create_upload_link`, `update_image`, `create_tag` and `set_image_tags` |
 
 The access level is read from the store on every request, so `set-access` applies on the
 person's next request without reconnecting. (Cloudflare KV is eventually consistent: a change
@@ -116,7 +157,8 @@ holding it must not let anyone mint MCP tokens. The API secret is rejected here,
 | `DELETE /admin/mcp-tokens/:name`  |                         | `{ name, revokedGrants }` |
 
 MCP clients call `/mcp` server-to-server, so no CORS origin is needed for them; the OAuth
-paths are handled before the Hono app and its `cors()` config.
+paths are handled before the Hono app and its `cors()` config. The `/upload/<token>` page posts
+to its own origin, so it needs no CORS entry either.
 
 ### One-time setup
 

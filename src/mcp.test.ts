@@ -4,11 +4,14 @@ import { folders, imageTags, images, tags, type Db } from './db'
 import worker from './index'
 import {
   createTag,
+  createUploadLink,
   getImage,
+  getUploadSessionTool,
   listFolders,
   listTags,
   setImageTags,
   searchImages,
+  updateImage,
   uploadImage,
   viewImages,
   type ToolContext,
@@ -16,6 +19,7 @@ import {
 } from './mcp'
 import { isAllowedRedirectUri, keysMatch } from './oauth'
 import { isBlockedHost, validateSourceUrl } from './utils/remoteFetch'
+import { findSessionByToken, getUploadSession, recordUploadedFile } from './uploadSessions'
 import {
   fakeJpeg,
   makeDb,
@@ -520,6 +524,170 @@ describe('set_image_tags', () => {
     expect(res.isError).toBe(true)
     expect(res.content[0]).toMatchObject({ text: expect.stringMatching(/read-only/) })
     expect(await db.select().from(imageTags)).toHaveLength(1)
+  })
+})
+
+// ── update_image ────────────────────────────────────────────────────────────
+
+describe('update_image', () => {
+  type Out = { id: string; filename: string; altText: string | null; folderId: string; folderPath: string; tags: { name: string }[]; sanity: unknown; note?: string }
+
+  it('changes only the given fields and returns the get_image shape', async () => {
+    const { ctx, db, ids } = await setup()
+    const [before] = await db.select().from(images).where(eq(images.id, ids.grandImg))
+    const res = await updateImage(ctx, { id: ids.grandImg, altText: '  Lys granskog  ' })
+    expect(res.isError).toBeUndefined()
+    const out = data<Out>(res)
+    expect(out).toMatchObject({ id: ids.grandImg, altText: 'Lys granskog', filename: 'granskog.jpg', folderId: ids.grandchild })
+    // Same shape as get_image, tags untouched.
+    const viaGet = data<Record<string, unknown>>(await getImage(ctx, { id: ids.grandImg }))
+    expect(Object.keys(out).sort()).toEqual(Object.keys(viaGet).sort())
+    expect(out.tags.map((t) => t.name)).toEqual(['Sommer'])
+    const [after] = await db.select().from(images).where(eq(images.id, ids.grandImg))
+    expect(after!.updatedAt.getTime()).toBeGreaterThanOrEqual(before!.updatedAt.getTime())
+  })
+
+  it('renames, moves and clears alt text in one call', async () => {
+    const { ctx, ids } = await setup()
+    const out = data<Out>(
+      await updateImage(ctx, { id: ids.rootImg, filename: ' topp.png ', folderId: ids.other, altText: '' })
+    )
+    expect(out).toMatchObject({ filename: 'topp.png', folderId: ids.other, folderPath: 'Byer', altText: null })
+    expect(out.note).toBeUndefined()
+  })
+
+  it('notes when the new filename is already taken by another image', async () => {
+    const { ctx, ids } = await setup()
+    const out = data<Out>(await updateImage(ctx, { id: ids.rootImg, filename: 'OSLO.jpg' }))
+    expect(out.filename).toBe('OSLO.jpg')
+    expect(out.note).toContain(ids.otherImg)
+  })
+
+  it('rejects empty requests, unknown images and folders, and blank filenames', async () => {
+    const { ctx, db, ids } = await setup()
+    const cases: [Parameters<typeof updateImage>[1], RegExp][] = [
+      [{ id: ids.rootImg }, /at least one/],
+      [{ id: crypto.randomUUID(), altText: 'x' }, /not found/],
+      [{ id: ids.rootImg, folderId: crypto.randomUUID() }, /does not exist/],
+      [{ id: ids.rootImg, filename: '   ' }, /must not be empty/],
+      [{ id: ids.rootImg, altText: 'x'.repeat(1001) }, /at most 1000/],
+    ]
+    for (const [input, message] of cases) {
+      const res = await updateImage(ctx, input)
+      expect(res.isError).toBe(true)
+      expect(res.content[0]).toMatchObject({ text: expect.stringMatching(message) })
+    }
+    const [row] = await db.select().from(images).where(eq(images.id, ids.rootImg))
+    expect(row).toMatchObject({ filename: 'fjell.png', altText: 'Fjelltopp i sol', folderId: ids.root })
+  })
+
+  it('refuses a read-only token', async () => {
+    const { ctx, db, ids } = await setup()
+    const res = await updateImage({ ...ctx, access: 'read' }, { id: ids.rootImg, altText: 'x' })
+    expect(res.isError).toBe(true)
+    expect(res.content[0]).toMatchObject({ text: expect.stringMatching(/read-only/) })
+    const [row] = await db.select().from(images).where(eq(images.id, ids.rootImg))
+    expect(row!.altText).toBe('Fjelltopp i sol')
+  })
+})
+
+// ── create_upload_link / get_upload_session ─────────────────────────────────
+
+describe('create_upload_link', () => {
+  type Out = {
+    url: string
+    uploadEndpoint: string
+    fileField: string
+    forceField: string
+    expiresAt: string
+    sessionId: string
+    maxFiles: number
+  }
+  const actor = { tokenName: 'Kari', tokenId: 'tok-1' }
+
+  it('creates a 30-minute session with folder, tags and the creating token', async () => {
+    const { ctx, ids } = await setup()
+    const now = new Date('2026-11-23T12:00:00Z')
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const res = await createUploadLink({ ...ctx, actor }, { folderId: ids.child, tagIds: [ids.tag, ids.tag] }, now)
+    expect(res.isError).toBeUndefined()
+    const out = data<Out>(res)
+    expect(out.expiresAt).toBe('2026-11-23T12:30:00.000Z')
+    expect(out.maxFiles).toBe(50)
+    expect(out.url).toMatch(new RegExp(`^${BASE}/upload/bb_up_[A-Za-z0-9_-]{43}$`))
+    // Claude can post straight to the endpoint the page uses.
+    expect(out).toMatchObject({ uploadEndpoint: out.url, fileField: 'file', forceField: 'force' })
+
+    const kv = ctx.env.OAUTH_KV!
+    const token = out.url.split('/').pop()!
+    const session = await findSessionByToken(kv, token)
+    expect(session).toMatchObject({
+      id: out.sessionId,
+      folderId: ids.child,
+      folderPath: 'Natur / Skog',
+      tagIds: [ids.tag],
+      tagNames: ['Sommer'],
+      createdBy: actor,
+    })
+    // Only the hash of the token is stored.
+    const keys = (await kv.list()).keys.map((k) => k.name)
+    const values = await Promise.all(keys.map((k) => kv.get(k)))
+    expect(JSON.stringify([keys, values])).not.toContain(token)
+    expect(log.mock.calls.map((c) => JSON.parse(c[0] as string))).toContainEqual(
+      expect.objectContaining({ event: 'mcp.write', tool: 'create_upload_link', tokenName: 'Kari', sessionId: out.sessionId })
+    )
+    log.mockRestore()
+  })
+
+  it('refuses unknown folders and tags, and read-only tokens', async () => {
+    const { ctx } = await setup()
+    expect((await createUploadLink(ctx, { folderId: crypto.randomUUID() })).isError).toBe(true)
+    expect((await createUploadLink(ctx, { tagIds: [crypto.randomUUID()] })).isError).toBe(true)
+    const res = await createUploadLink({ ...ctx, access: 'read' }, {})
+    expect(res.isError).toBe(true)
+    expect(res.content[0]).toMatchObject({ text: expect.stringMatching(/read-only/) })
+    expect((await ctx.env.OAUTH_KV!.list({ prefix: 'upload:' })).keys).toHaveLength(0)
+  })
+})
+
+describe('get_upload_session', () => {
+  type Out = {
+    sessionId: string
+    expired: boolean
+    remaining: number
+    images: { id: string; filename: string; url: string; altText: string | null }[]
+    alreadyInLibrary: { id: string }[]
+  }
+
+  it('lists uploaded and already-existing images, and works with a read token', async () => {
+    const { ctx, ids } = await setup()
+    const now = new Date()
+    const { sessionId } = data<{ sessionId: string }>(await createUploadLink(ctx, {}, now))
+    const kv = ctx.env.OAUTH_KV!
+    await recordUploadedFile(kv, sessionId, { imageId: ids.rootImg, kind: 'uploaded' }, new Date(now.getTime() + 1))
+    await recordUploadedFile(kv, sessionId, { imageId: ids.childImg, kind: 'uploaded' }, new Date(now.getTime() + 2))
+    await recordUploadedFile(kv, sessionId, { imageId: ids.otherImg, kind: 'existing' }, new Date(now.getTime() + 3))
+    // Deleted since: drops out of the list.
+    await recordUploadedFile(kv, sessionId, { imageId: crypto.randomUUID(), kind: 'uploaded' }, new Date(now.getTime() + 4))
+
+    const out = data<Out>(await getUploadSessionTool({ ...ctx, access: 'read' }, { sessionId }, now))
+    expect(out).toMatchObject({ sessionId, expired: false, remaining: 47 })
+    expect(out.images).toEqual([
+      { id: ids.rootImg, filename: 'fjell.png', url: expect.stringMatching(`^${BASE}/files/`), altText: 'Fjelltopp i sol' },
+      { id: ids.childImg, filename: 'skogsti.jpg', url: expect.any(String), altText: null },
+    ])
+    expect(out.alreadyInLibrary.map((i) => i.id)).toEqual([ids.otherImg])
+
+    const later = new Date(now.getTime() + 31 * 60 * 1000)
+    expect(data<Out>(await getUploadSessionTool(ctx, { sessionId }, later)).expired).toBe(true)
+    expect(await getUploadSession(kv, sessionId)).not.toBeNull()
+  })
+
+  it('reports an unknown session', async () => {
+    const { ctx } = await setup()
+    const res = await getUploadSessionTool(ctx, { sessionId: crypto.randomUUID() })
+    expect(res.isError).toBe(true)
+    expect(res.content[0]).toMatchObject({ text: expect.stringMatching(/not found/) })
   })
 })
 

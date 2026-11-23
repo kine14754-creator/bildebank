@@ -6,6 +6,7 @@ import { imageTagRoutes } from './routes/imageTags'
 import { tagRoutes } from './routes/tags'
 import { folderRoutes } from './routes/folders'
 import { adminRoutes } from './routes/admin'
+import { uploadPageRoutes } from './routes/uploadPage'
 import { getFromR2 } from './r2/client'
 import { handleOAuthAndMcp } from './oauth'
 import type { Env } from './types'
@@ -77,6 +78,9 @@ app.route('/api/images', imageTagRoutes)
 app.route('/api/tags', tagRoutes)
 app.route('/api/folders', folderRoutes)
 app.route('/admin/mcp-tokens', adminRoutes)
+// Upload page for links made by the MCP create_upload_link tool. No API secret:
+// the token in the path is the credential (see routes/uploadPage.ts).
+app.route('/upload', uploadPageRoutes)
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

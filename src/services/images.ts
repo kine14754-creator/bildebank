@@ -192,3 +192,22 @@ export async function storeImage(env: Env, db: Db, input: StoreImageInput): Prom
 
   return image as Image
 }
+
+export interface ImageUpdate {
+  filename?: string
+  altText?: string | null
+  folderId?: string
+}
+
+/**
+ * Change metadata on one image (only the fields given) and bump updatedAt.
+ * Returns the updated row, or undefined when there is no such image.
+ */
+export async function updateImage(db: Db, id: string, patch: ImageUpdate): Promise<Image | undefined> {
+  const set: Partial<Image> = { updatedAt: new Date() }
+  if (patch.filename !== undefined) set.filename = patch.filename
+  if (patch.altText !== undefined) set.altText = patch.altText
+  if (patch.folderId !== undefined) set.folderId = patch.folderId
+  const [row] = await db.update(images).set(set).where(eq(images.id, id)).returning()
+  return row
+}
