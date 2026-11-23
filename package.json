@@ -17,7 +17,104 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dev:db": "node scripts/local-neon.mjs",
-    "mcp-token": "node scripts/mcp-token.mjs"
+    "mcp-token": "node scripts/mcp-token.mjs",
+    "help": "node scripts/help.mjs"
+  },
+  "scriptsHelp": {
+    "//": "Shown by `npm run help`. One entry per script above; add one when you add a script.",
+    "help": {
+      "desc": "Print this overview",
+      "examples": [
+        "npm run help"
+      ]
+    },
+    "dev": {
+      "desc": "Run the worker locally with wrangler dev (reads .dev.vars)",
+      "examples": [
+        "npm run dev   # http://localhost:8787"
+      ]
+    },
+    "dev:db": {
+      "desc": "Local stand-in for Neon (PGlite) so wrangler dev runs without a database; port 4444 by default",
+      "examples": [
+        "npm run dev:db",
+        "PORT=54444 npm run dev:db   # keep DATABASE_URL's port in sync",
+        "npm run dev:db -- --memory   # fresh database every start"
+      ]
+    },
+    "deploy": {
+      "desc": "Deploy the worker to Cloudflare (CI also deploys on every push to main)",
+      "examples": [
+        "npm run deploy"
+      ]
+    },
+    "test": {
+      "desc": "Run the tests once (vitest, in-memory Postgres)",
+      "examples": [
+        "npm test",
+        "npm test -- src/mcp.test.ts -t update_image"
+      ]
+    },
+    "test:watch": {
+      "desc": "Run the tests in watch mode",
+      "examples": [
+        "npm run test:watch"
+      ]
+    },
+    "type-check": {
+      "desc": "Type-check with tsc, no output files",
+      "examples": [
+        "npm run type-check"
+      ]
+    },
+    "format": {
+      "desc": "Format the repo with Prettier",
+      "examples": [
+        "npm run format"
+      ]
+    },
+    "format:check": {
+      "desc": "Check formatting without changing files",
+      "examples": [
+        "npm run format:check"
+      ]
+    },
+    "mcp-token": {
+      "desc": "Manage personal access tokens for /mcp (needs ADMIN_SECRET; BILDEBANK_URL defaults to production)",
+      "examples": [
+        "npm run mcp-token -- create \"Kari Nordmann\" --write",
+        "npm run mcp-token -- list",
+        "npm run mcp-token -- set-access \"Kari Nordmann\" read",
+        "npm run mcp-token -- revoke \"Kari Nordmann\"",
+        "BILDEBANK_URL=http://localhost:8787 npm run mcp-token -- list   # local worker"
+      ]
+    },
+    "db:generate": {
+      "desc": "Generate a SQL migration in drizzle/ from src/db/schema.ts",
+      "examples": [
+        "npm run db:generate"
+      ]
+    },
+    "db:migrate": {
+      "desc": "Apply drizzle migrations to the database in DATABASE_URL",
+      "examples": [
+        "npm run db:migrate"
+      ]
+    },
+    "db:studio": {
+      "desc": "Open Drizzle Studio to browse the database in DATABASE_URL",
+      "examples": [
+        "npm run db:studio"
+      ]
+    }
+  },
+  "commandsHelp": {
+    "npx wrangler tail": {
+      "desc": "Stream production logs, including the mcp.write / upload_link.upload attribution lines",
+      "examples": [
+        "npx wrangler tail --format pretty"
+      ]
+    }
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^1.2.4",

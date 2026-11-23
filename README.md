@@ -4,6 +4,9 @@ Image library on Cloudflare Workers: Hono API, R2 for files, Neon Postgres (driz
 metadata. Used by Sanity Studio through `@fmweb/sanity-bildebank`, and by Claude through
 the MCP server at `/mcp`.
 
+Run `npm run help` for a short overview of every command in this repo (npm scripts, token
+management, the local database, dev/deploy, tests) with examples.
+
 | Path            | Auth                         | What                                   |
 | --------------- | ---------------------------- | -------------------------------------- |
 | `/health`       | none                         | Health check                           |
